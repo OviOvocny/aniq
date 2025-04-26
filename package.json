@@ -10,10 +10,10 @@
     "astro": "astro"
   },
   "dependencies": {
-    "@astrojs/netlify": "^3.0.0",
-    "@astrojs/react": "^3.0.0",
-    "@astrojs/tailwind": "^5.0.0",
-    "astro": "^4.0.0",
+    "@astrojs/netlify": "^6.3.1",
+    "@astrojs/react": "^4.2.5",
+    "@astrojs/tailwind": "^6.0.2",
+    "astro": "^5.7.5",
     "graphql": "^16.8.1",
     "graphql-request": "^6.1.0",
     "react": "^18.2.0",
