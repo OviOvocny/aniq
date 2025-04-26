@@ -1,0 +1,36 @@
+---
+import Layout from '../layouts/Layout.astro';
+---
+
+<Layout title="AniQ - Leaderboard">
+  <div class="max-w-4xl mx-auto">
+    <h1 class="text-4xl font-bold mb-8 text-center">Leaderboard</h1>
+    
+    <div class="bg-secondary rounded-lg p-6">
+      <div class="grid grid-cols-3 gap-4 mb-4 font-semibold text-accent">
+        <div>Rank</div>
+        <div>Player</div>
+        <div>Score</div>
+      </div>
+      
+      <div class="space-y-2">
+        <!-- Placeholder for leaderboard entries -->
+        <div class="grid grid-cols-3 gap-4 p-2 hover:bg-opacity-50 hover:bg-gray-700 rounded">
+          <div>1</div>
+          <div>Player1</div>
+          <div>1000</div>
+        </div>
+        <div class="grid grid-cols-3 gap-4 p-2 hover:bg-opacity-50 hover:bg-gray-700 rounded">
+          <div>2</div>
+          <div>Player2</div>
+          <div>850</div>
+        </div>
+        <div class="grid grid-cols-3 gap-4 p-2 hover:bg-opacity-50 hover:bg-gray-700 rounded">
+          <div>3</div>
+          <div>Player3</div>
+          <div>720</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</Layout> 

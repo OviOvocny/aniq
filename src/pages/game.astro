@@ -1,0 +1,66 @@
+---
+import Layout from '../layouts/Layout.astro';
+import Game from '../components/Game';
+
+// Define default values and parse URL parameters in the frontmatter
+const MIN_YEAR = 1940;
+const MAX_YEAR = new Date().getFullYear();
+
+const urlParams = Astro.url.searchParams;
+
+// Parse and validate year range
+const yearStart = parseInt(urlParams.get('yearStart') || '2000');
+const yearEnd = parseInt(urlParams.get('yearEnd') || MAX_YEAR.toString());
+const validYearStart = Math.max(MIN_YEAR, Math.min(yearStart, yearEnd));
+const validYearEnd = Math.max(validYearStart, Math.min(yearEnd, MAX_YEAR));
+
+const options = {
+  genres: urlParams.get('genres')?.split(',').filter(Boolean) || [],
+  yearRange: {
+    start: validYearStart,
+    end: validYearEnd
+  },
+  useJapaneseTitles: urlParams.get('useJapaneseTitles') === 'true',
+  difficulty: urlParams.get('difficulty') || 'medium'
+};
+---
+
+<Layout title="AniQ - Game">
+  <div class="max-w-4xl mx-auto">
+    <Game options={JSON.stringify(options)} client:load />
+  </div>
+</Layout>
+
+<!-- Remove the client-side script that set data-options -->
+<!-- <script>
+  const MIN_YEAR = 1940
+  const MAX_YEAR = new Date().getFullYear()
+
+  // Handle game options from URL parameters
+  const urlParams = new URLSearchParams(window.location.search);
+  
+  // Parse and validate year range
+  const yearStart = parseInt(urlParams.get('yearStart') || '2000');
+  const yearEnd = parseInt(urlParams.get('yearEnd') || MAX_YEAR.toString());
+  
+  // Ensure year range is valid
+  const validYearStart = Math.max(MIN_YEAR, Math.min(yearStart, yearEnd));
+  const validYearEnd = Math.max(validYearStart, Math.min(yearEnd, MAX_YEAR));
+
+  const options = {
+    genres: urlParams.get('genres')?.split(',').filter(Boolean) || [],
+    yearRange: {
+      start: validYearStart,
+      end: validYearEnd
+    },
+    useJapaneseTitles: urlParams.get('useJapaneseTitles') === 'true',
+    difficulty: urlParams.get('difficulty') || 'medium'
+  };
+
+  // Pass options to Game component
+  const gameComponent = document.querySelector('game-component');
+  if (gameComponent) {
+    // Set the options as a data attribute
+    gameComponent.setAttribute('data-options', JSON.stringify(options));
+  }
+</script> --> 

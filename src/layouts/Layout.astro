@@ -1,0 +1,48 @@
+---
+interface Props {
+  title: string;
+}
+
+const { title } = Astro.props;
+---
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="generator" content={Astro.generator} />
+    <title>{title}</title>
+  </head>
+  <body class="min-h-screen bg-primary text-white">
+    <header class="container mx-auto px-4 py-6">
+      <nav class="flex justify-between items-center">
+        <a href="/" class="text-2xl font-bold text-accent">AniQ</a>
+        <div class="space-x-4">
+          <a href="/" class="hover:text-accent transition-colors">Home</a>
+          <a href="/game" class="hover:text-accent transition-colors">Play</a>
+          <a href="/leaderboard" class="hover:text-accent transition-colors">Leaderboard</a>
+        </div>
+      </nav>
+    </header>
+    <main class="container mx-auto px-4 py-8">
+      <slot />
+    </main>
+    <footer class="container mx-auto px-4 py-6 text-center text-gray-400">
+      <p>Built with ❤️ using Astro and AniList API</p>
+    </footer>
+  </body>
+</html>
+
+<style is:global>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+  
+  :root {
+    --accent: #ff6b6b;
+  }
+  
+  body {
+    font-family: 'Inter', sans-serif;
+  }
+</style> 
