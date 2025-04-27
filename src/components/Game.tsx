@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import {
   getQuestionCharacters,
   fetchAnimeDetails,
@@ -11,6 +11,7 @@ import { Lives } from './Lives'
 import { AnswerOption } from './AnswerOption'
 import { Lifelines } from './Lifelines'
 import type { GameOptions } from './GameOptions'
+import { GamepadButtonIcon } from './GamepadButtonIcon'
 
 interface GameState {
   score: number
@@ -28,6 +29,7 @@ interface GameState {
     skip: number | null
     hint: number | null
   }
+  gamepadEnabled: boolean
 }
 
 interface GameProps {
@@ -43,6 +45,7 @@ const DEFAULT_OPTIONS: GameOptions = {
   titleDisplay: 'romaji',
   difficulty: 'medium',
   timerEnabled: true,
+  gamepadEnabled: false,
 }
 
 const TIMER_WARNING_THRESHOLD = 5 // seconds before timer turns red
@@ -138,12 +141,22 @@ export default function Game({
       urlOptions.timerEnabled = timerEnabledStr === 'true'
     }
 
+    const gamepadEnabledStr = params.get('gamepadEnabled')
+    if (gamepadEnabledStr !== null) {
+      urlOptions.gamepadEnabled = gamepadEnabledStr === 'true'
+    }
+
     // Merge URL options with defaults, giving precedence to URL options
     // Ensure initialOptions is treated as default if it's not a complete object (e.g., came from props but isn't used)
     const baseOptions =
       typeof initialOptions === 'object' ? initialOptions : DEFAULT_OPTIONS
     return { ...baseOptions, ...urlOptions }
   })
+
+  // Add state for gamepad mode based on parsed options
+  const [isGamepadModeActive, setIsGamepadModeActive] = useState(
+    parsedOptions.gamepadEnabled
+  )
 
   const [gameState, setGameState] = useState<GameState>(() => ({
     score: 0,
@@ -162,6 +175,7 @@ export default function Game({
       skip: null,
       hint: null,
     },
+    gamepadEnabled: parsedOptions.gamepadEnabled,
   }))
 
   const [correctCharacterId, setCorrectCharacterId] = useState<number | null>(
@@ -190,6 +204,314 @@ export default function Game({
   >(null)
   const [isFetchingHint, setIsFetchingHint] = useState(false)
   const [hiddenOptionIds, setHiddenOptionIds] = useState<Set<number>>(new Set())
+
+  // Refs for debouncing gamepad inputs
+  const lastGamepadState = useRef<Gamepad | null>(null)
+  const buttonPressed = useRef<{ [key: number]: boolean }>({})
+  const axisPressed = useRef<{ [key: number]: boolean }>({})
+  const dpadPressed = useRef<{ [key: string]: boolean }>({})
+
+  // --- Lifeline Handlers ---
+  const useLifeline = (type: keyof GameState['lifelines']) => {
+    setGameState((prev) => ({
+      ...prev,
+      lifelines: {
+        ...prev.lifelines,
+        [type]: false,
+      },
+      lifelineUsage: {
+        ...prev.lifelineUsage,
+        [type]: prev.currentRound,
+      },
+    }))
+  }
+
+  const handleFiftyFifty = () => {
+    if (
+      !correctCharacterId ||
+      characterOptions.length <= 2 ||
+      hiddenOptionIds.size > 0
+    )
+      return
+
+    const incorrectOptions = characterOptions.filter(
+      (opt) => opt.id !== correctCharacterId
+    )
+    if (incorrectOptions.length < 2) return
+
+    const optionsToHide = incorrectOptions
+      .sort(() => Math.random() - 0.5)
+      .slice(0, 2)
+
+    setHiddenOptionIds(new Set(optionsToHide.map((opt) => opt.id)))
+
+    useLifeline('fiftyFifty')
+  }
+
+  const handleSkip = () => {
+    if (!gameState.lifelines.skip) return
+    setIsTimerRunning(false)
+    useLifeline('skip')
+    setFeedback({
+      correctId: correctCharacterId,
+      selectedId: null,
+    })
+    setTimeout(() => {
+      setGameState((prev) => ({
+        ...prev,
+        currentRound: prev.currentRound + 1,
+      }))
+      setFeedback({ correctId: null, selectedId: null })
+      if (pendingPause) {
+        setShowPauseScreen(true)
+        setPendingPause(false)
+      }
+    }, 1500)
+  }
+
+  const handleHint = async () => {
+    if (!correctAnimeId || !gameState.lifelines.hint || isFetchingHint || hint)
+      return
+
+    setIsTimerRunning(false)
+    setIsFetchingHint(true)
+    setHint('Fetching hint...')
+
+    try {
+      const details = await fetchAnimeDetails(correctAnimeId)
+
+      const hintTypes = [
+        {
+          type: 'studio',
+          text: `Produced by ${details.studios?.nodes?.[0]?.name}`,
+        },
+        {
+          type: 'director',
+          text: `Directed by ${details.staff?.edges?.find((edge: any) => edge.role === 'Director')?.node.name.full}`,
+        },
+        { type: 'year', text: `Released in ${details.startDate?.year}` },
+        { type: 'genre', text: `Genre: ${details.genres?.[0]}` },
+      ]
+
+      const validHints = hintTypes.filter((h) => {
+        if (!h.text || h.text.endsWith('undefined')) return false
+        switch (h.type) {
+          case 'studio':
+            return details.studios?.nodes?.[0]?.name
+          case 'director':
+            return details.staff?.edges?.find(
+              (edge: any) => edge.role === 'Director'
+            )?.node.name.full
+          case 'year':
+            return details.startDate?.year
+          case 'genre':
+            return details.genres?.[0]
+          default:
+            return false
+        }
+      })
+
+      if (validHints.length > 0) {
+        const randomHint =
+          validHints[Math.floor(Math.random() * validHints.length)]
+        setHint(randomHint.text)
+        useLifeline('hint')
+      } else {
+        setHint('Hint unavailable for this anime. Lifeline not used.')
+      }
+    } catch (error) {
+      console.error('Error fetching hint details:', error)
+      setHint('Error fetching hint. Lifeline not used.')
+    }
+    setIsFetchingHint(false)
+    if (!gameOver && feedback.correctId === null) {
+      setIsTimerRunning(true)
+    }
+  }
+
+  // --- Game State/Score/Pause Handlers (Moved Up) ---
+  const calculateScore = useCallback(() => {
+    const baseScore = 100
+    const timeElapsed =
+      getTimePerQuestion(parsedOptions.difficulty) - gameState.timeLeft
+    const timeBonus = parsedOptions.timerEnabled
+      ? Math.floor(Math.max(10 - timeElapsed, 0) * 20)
+      : 0
+    console.debug('Time bonus:', parsedOptions.timerEnabled, timeBonus)
+    const difficultyMultiplier = 1 + (gameState.currentRound - 1) * 0.1
+    return Math.floor((baseScore + timeBonus) * difficultyMultiplier)
+  }, [
+    parsedOptions.difficulty,
+    gameState.timeLeft,
+    parsedOptions.timerEnabled,
+    gameState.currentRound,
+  ])
+
+  const handleWrongAnswer = useCallback(() => {
+    setGameState((prev) => ({
+      ...prev,
+      lives: prev.lives - 1,
+    }))
+
+    if (gameState.lives <= 1) {
+      setGameOver(true)
+      setIsTimerRunning(false)
+    } else {
+      setTimeout(() => {
+        setGameState((prev) => ({
+          ...prev,
+          currentRound: prev.currentRound + 1,
+        }))
+        if (pendingPause) {
+          setShowPauseScreen(true)
+          setPendingPause(false)
+        }
+      }, 1500)
+    }
+  }, [gameState.lives, pendingPause])
+
+  const requestPause = useCallback(() => {
+    setPendingPause(true)
+  }, [])
+
+  const resumeGame = useCallback(() => {
+    setShowPauseScreen(false)
+    setPendingPause(false)
+    setGameState((prev) => ({
+      ...prev,
+      timeLeft: getTimePerQuestion(parsedOptions.difficulty),
+      isPaused: false,
+    }))
+    setIsTimerRunning(true)
+  }, [parsedOptions.difficulty])
+
+  // --- Game Action Handlers ---
+  const handleAnswer = useCallback(
+    (selectedOption: AnimeCharacter) => {
+      if (feedback.correctId !== null) return
+      setIsTimerRunning(false)
+
+      if (selectedOption.id === correctCharacterId) {
+        setFeedback({
+          correctId: correctCharacterId,
+          selectedId: selectedOption.id,
+        })
+
+        setTimeout(() => {
+          setGameState((prev) => ({
+            ...prev,
+            score: prev.score + calculateScore(),
+            currentRound: prev.currentRound + 1,
+          }))
+
+          if (pendingPause) {
+            setShowPauseScreen(true)
+            setPendingPause(false)
+          }
+          setFeedback({ correctId: null, selectedId: null })
+        }, 1500)
+      } else {
+        setFeedback({
+          correctId: correctCharacterId,
+          selectedId: selectedOption.id,
+        })
+
+        setTimeout(() => {
+          handleWrongAnswer()
+          setFeedback({ correctId: null, selectedId: null })
+        }, 1500)
+      }
+    },
+    [
+      feedback.correctId,
+      correctCharacterId,
+      calculateScore,
+      pendingPause,
+      handleWrongAnswer,
+    ]
+  )
+
+  // --- Gamepad Action Handlers ---
+  const handleGamepadButtonPress = useCallback(
+    (buttonIndex: number) => {
+      // Don't process input if feedback is showing or paused
+      if (feedback.correctId !== null || showPauseScreen) return
+
+      switch (buttonIndex) {
+        // Face Buttons (Xbox: A=0, B=1, X=2, Y=3)
+        case 0: // A / Cross
+          break
+        case 1: // B / Circle - Hint Lifeline
+          if (gameState.lifelines.hint && !isFetchingHint) handleHint()
+          break
+        case 2: // X / Square - 50/50 Lifeline
+          if (gameState.lifelines.fiftyFifty) handleFiftyFifty()
+          break
+        case 3: // Y / Triangle - Skip Lifeline
+          if (gameState.lifelines.skip) handleSkip()
+          break
+        // Pause Button (Xbox: Menu=9)
+        case 9:
+          if (parsedOptions.timerEnabled && !pendingPause && !showPauseScreen) {
+            requestPause()
+          } else if (showPauseScreen) {
+            resumeGame()
+          }
+          break
+        default:
+          break
+      }
+    },
+    [
+      feedback,
+      showPauseScreen,
+      gameState.lifelines,
+      isFetchingHint,
+      parsedOptions.timerEnabled,
+      pendingPause,
+      handleSkip,
+      handleFiftyFifty,
+      handleHint,
+      requestPause,
+      resumeGame,
+    ]
+  )
+
+  const handleGamepadDpadPress = useCallback(
+    (direction: string) => {
+      // Don't process input if feedback is showing or paused
+      if (feedback.correctId !== null || showPauseScreen) return
+      if (!characterOptions || characterOptions.length !== 4) return // Expect 4 options for D-pad mapping
+
+      // Map direction to the character option based on the cross layout
+      // We need to know the order/layout of characterOptions when rendered in the cross
+      // Assuming: options[0]=Top, options[1]=Left, options[2]=Right, options[3]=Bottom
+      let targetOptionIndex = -1
+      switch (direction) {
+        case 'up':
+          targetOptionIndex = 0
+          break
+        case 'left':
+          targetOptionIndex = 1
+          break
+        case 'right':
+          targetOptionIndex = 2
+          break
+        case 'down':
+          targetOptionIndex = 3
+          break
+      }
+
+      if (targetOptionIndex !== -1 && characterOptions[targetOptionIndex]) {
+        const targetOption = characterOptions[targetOptionIndex]
+        // Check if this option is hidden by 50/50
+        if (!hiddenOptionIds.has(targetOption.id)) {
+          handleAnswer(targetOption)
+        }
+      }
+    },
+    [feedback, showPauseScreen, characterOptions, hiddenOptionIds, handleAnswer]
+  )
 
   const preloadNextQuestion = useCallback(async () => {
     if (isPreloading || gameOver) return
@@ -334,208 +656,145 @@ export default function Game({
     parsedOptions.timerEnabled,
   ])
 
-  const handleAnswer = (selectedOption: AnimeCharacter) => {
-    if (feedback.correctId !== null) return
-    setIsTimerRunning(false)
-
-    if (selectedOption.id === correctCharacterId) {
-      setFeedback({
-        correctId: correctCharacterId,
-        selectedId: selectedOption.id,
-      })
-
-      setTimeout(() => {
-        setGameState((prev) => ({
-          ...prev,
-          score: prev.score + calculateScore(),
-          currentRound: prev.currentRound + 1,
-        }))
-
-        if (pendingPause) {
-          setShowPauseScreen(true)
-          setPendingPause(false)
-        }
-        setFeedback({ correctId: null, selectedId: null })
-      }, 1500)
-    } else {
-      setFeedback({
-        correctId: correctCharacterId,
-        selectedId: selectedOption.id,
-      })
-
-      setTimeout(() => {
-        handleWrongAnswer()
-        setFeedback({ correctId: null, selectedId: null })
-      }, 1500)
-    }
-  }
-
-  const handleWrongAnswer = () => {
-    setGameState((prev) => ({
-      ...prev,
-      lives: prev.lives - 1,
-    }))
-
-    if (gameState.lives <= 1) {
-      setGameOver(true)
-      setIsTimerRunning(false)
-    } else {
-      setTimeout(() => {
-        setGameState((prev) => ({
-          ...prev,
-          currentRound: prev.currentRound + 1,
-        }))
-        if (pendingPause) {
-          setShowPauseScreen(true)
-          setPendingPause(false)
-        }
-      }, 1500)
-    }
-  }
-
-  const calculateScore = () => {
-    const baseScore = 100
-    const timeElapsed =
-      getTimePerQuestion(parsedOptions.difficulty) - gameState.timeLeft
-    const timeBonus = parsedOptions.timerEnabled
-      ? Math.floor(Math.max(10 - timeElapsed, 0) * 20)
-      : 0
-    console.debug('Time bonus:', parsedOptions.timerEnabled, timeBonus)
-    const difficultyMultiplier = 1 + (gameState.currentRound - 1) * 0.1
-    return Math.floor((baseScore + timeBonus) * difficultyMultiplier)
-  }
-
-  const requestPause = () => {
-    setPendingPause(true)
-  }
-
-  const resumeGame = () => {
-    setShowPauseScreen(false)
-    setPendingPause(false)
-    setGameState((prev) => ({
-      ...prev,
-      timeLeft: getTimePerQuestion(parsedOptions.difficulty),
-      isPaused: false,
-    }))
-    setIsTimerRunning(true)
-  }
-
-  const useLifeline = (type: keyof GameState['lifelines']) => {
-    setGameState((prev) => ({
-      ...prev,
-      lifelines: {
-        ...prev.lifelines,
-        [type]: false,
-      },
-      lifelineUsage: {
-        ...prev.lifelineUsage,
-        [type]: prev.currentRound,
-      },
-    }))
-  }
-
-  const handleFiftyFifty = () => {
+  // --- Gamepad Input Handling Effect ---
+  useEffect(() => {
     if (
-      !correctCharacterId ||
-      characterOptions.length <= 2 ||
-      hiddenOptionIds.size > 0
-    )
+      !isGamepadModeActive ||
+      typeof window === 'undefined' ||
+      !navigator.getGamepads
+    ) {
       return
+    }
 
-    const incorrectOptions = characterOptions.filter(
-      (opt) => opt.id !== correctCharacterId
-    )
-    if (incorrectOptions.length < 2) return
+    let animationFrameId: number | null = null
 
-    const optionsToHide = incorrectOptions
-      .sort(() => Math.random() - 0.5)
-      .slice(0, 2)
+    const gamepadLoop = () => {
+      const gamepads = navigator.getGamepads()
+      const gamepad = gamepads[0] // Use the first connected gamepad
 
-    setHiddenOptionIds(new Set(optionsToHide.map((opt) => opt.id)))
+      if (gamepad) {
+        const now = performance.now()
 
-    useLifeline('fiftyFifty')
-  }
+        // --- Button Handling (Face buttons, Pause, D-pad Buttons) ---
+        gamepad.buttons.forEach((button, index) => {
+          const wasPressed = buttonPressed.current[index]
+          if (button.pressed && !wasPressed) {
+            console.log(`Gamepad Button ${index} Pressed`)
+            buttonPressed.current[index] = true
+            handleGamepadButtonPress(index)
+          } else if (!button.pressed && wasPressed) {
+            buttonPressed.current[index] = false
+          }
+        })
 
-  const handleSkip = () => {
-    if (!gameState.lifelines.skip) return
-    setIsTimerRunning(false)
-    useLifeline('skip')
-    setFeedback({
-      correctId: correctCharacterId,
-      selectedId: null,
-    })
-    setTimeout(() => {
-      setGameState((prev) => ({
-        ...prev,
-        currentRound: prev.currentRound + 1,
-      }))
-      setFeedback({ correctId: null, selectedId: null })
-      if (pendingPause) {
-        setShowPauseScreen(true)
-        setPendingPause(false)
-      }
-    }, 1500)
-  }
+        // --- D-pad Handling (Map Axes to D-pad if buttons 12-15 aren't standard) ---
+        // Example: Axis 9 often represents hat switch (D-pad)
+        // Values typically range from -1 to 1 in discrete steps.
+        // This needs refinement based on common gamepad mappings.
+        const dpadAxis = gamepad.axes[9]
+        const threshold = 0.5 // Sensitivity threshold
 
-  const handleHint = async () => {
-    if (!correctAnimeId || !gameState.lifelines.hint || isFetchingHint || hint)
-      return
-
-    setIsTimerRunning(false)
-    setIsFetchingHint(true)
-    setHint('Fetching hint...')
-
-    try {
-      const details = await fetchAnimeDetails(correctAnimeId)
-
-      const hintTypes = [
-        {
-          type: 'studio',
-          text: `Produced by ${details.studios?.nodes?.[0]?.name}`,
-        },
-        {
-          type: 'director',
-          text: `Directed by ${details.staff?.edges?.find((edge: any) => edge.role === 'Director')?.node.name.full}`,
-        },
-        { type: 'year', text: `Released in ${details.startDate?.year}` },
-        { type: 'genre', text: `Genre: ${details.genres?.[0]}` },
-      ]
-
-      const validHints = hintTypes.filter((h) => {
-        if (!h.text || h.text.endsWith('undefined')) return false
-        switch (h.type) {
-          case 'studio':
-            return details.studios?.nodes?.[0]?.name
-          case 'director':
-            return details.staff?.edges?.find(
-              (edge: any) => edge.role === 'Director'
-            )?.node.name.full
-          case 'year':
-            return details.startDate?.year
-          case 'genre':
-            return details.genres?.[0]
-          default:
-            return false
+        const dpadMap: { [key: number]: string } = {
+          12: 'up',
+          13: 'down',
+          14: 'left',
+          15: 'right',
         }
-      })
 
-      if (validHints.length > 0) {
-        const randomHint =
-          validHints[Math.floor(Math.random() * validHints.length)]
-        setHint(randomHint.text)
-        useLifeline('hint')
-      } else {
-        setHint('Hint unavailable for this anime. Lifeline not used.')
+        // Check standard D-pad buttons first
+        let dpadAction: string | null = null
+        for (const btnIndex in dpadMap) {
+          const idx = parseInt(btnIndex, 10)
+          if (
+            gamepad.buttons[idx]?.pressed &&
+            !dpadPressed.current[dpadMap[idx]]
+          ) {
+            dpadAction = dpadMap[idx]
+            dpadPressed.current[dpadMap[idx]] = true
+            break // Handle only one D-pad direction at a time
+          }
+          if (
+            !gamepad.buttons[idx]?.pressed &&
+            dpadPressed.current[dpadMap[idx]]
+          ) {
+            dpadPressed.current[dpadMap[idx]] = false
+          }
+        }
+
+        // Fallback to axis if no D-pad buttons pressed
+        if (dpadAction === null && dpadAxis !== undefined) {
+          if (dpadAxis < -threshold + 0.1 && dpadAxis > -threshold - 0.1) {
+            // ~-0.714 (Up-Left)
+            // Could handle diagonals if needed
+          } else if (dpadAxis < -threshold) {
+            // ~-1.0 (Up)
+            if (!dpadPressed.current['up']) {
+              dpadAction = 'up'
+              dpadPressed.current['up'] = true
+            }
+          } else if (dpadAxis > threshold + 0.3 && dpadAxis < threshold + 0.5) {
+            // ~0.714 (Down-Right)
+            // Diagonals
+          } else if (dpadAxis > threshold) {
+            // ~1.0 (Down)
+            if (!dpadPressed.current['down']) {
+              dpadAction = 'down'
+              dpadPressed.current['down'] = true
+            }
+          } else if (
+            dpadAxis > -threshold + 0.3 &&
+            dpadAxis < -threshold + 0.5
+          ) {
+            // ~-0.143 (Up-Right)
+            // Diagonals
+          } else if (dpadAxis > 0 && dpadAxis < threshold) {
+            // ~0.142 (Right)
+            if (!dpadPressed.current['right']) {
+              dpadAction = 'right'
+              dpadPressed.current['right'] = true
+            }
+          } else if (dpadAxis < 0 && dpadAxis > -threshold) {
+            // ~-0.428 (Left)
+            if (!dpadPressed.current['left']) {
+              dpadAction = 'left'
+              dpadPressed.current['left'] = true
+            }
+          } else {
+            // Neutral state (~ -0.0)
+            dpadPressed.current['up'] = false
+            dpadPressed.current['down'] = false
+            dpadPressed.current['left'] = false
+            dpadPressed.current['right'] = false
+          }
+        }
+
+        if (dpadAction) {
+          console.log(`Gamepad D-pad ${dpadAction} Pressed`)
+          handleGamepadDpadPress(dpadAction)
+        }
+
+        lastGamepadState.current = {
+          ...gamepad, // Shallow copy is likely fine here
+          buttons: gamepad.buttons.map((b) => ({
+            pressed: b.pressed,
+            touched: b.touched,
+            value: b.value,
+          })),
+          axes: [...gamepad.axes],
+        }
       }
-    } catch (error) {
-      console.error('Error fetching hint details:', error)
-      setHint('Error fetching hint. Lifeline not used.')
+
+      animationFrameId = requestAnimationFrame(gamepadLoop)
     }
-    setIsFetchingHint(false)
-    if (!gameOver && feedback.correctId === null) {
-      setIsTimerRunning(true)
+
+    animationFrameId = requestAnimationFrame(gamepadLoop)
+
+    return () => {
+      if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId)
+      }
     }
-  }
+  }, [isGamepadModeActive, handleGamepadButtonPress, handleGamepadDpadPress]) // These should now be defined
 
   if (isLoading) {
     return (
@@ -624,78 +883,122 @@ export default function Game({
         />
       )}
 
-      <div className="bg-secondary p-6 rounded-lg min-h-[400px] flex items-center justify-center">
-        {isLoading ? (
-          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-accent"></div>
-        ) : currentQuestionImage ? (
-          <div className="flex justify-center">
+      {currentQuestionImage && (
+        <div className="bg-secondary p-6 rounded-lg h-96 max-h-[45dvh] flex gap-2 flex-col items-center justify-center">
+          {isLoading ? (
+            <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-accent"></div>
+          ) : currentQuestionImage ? (
             <img
               src={currentQuestionImage}
               alt="Character Image"
-              className="max-h-96 w-auto object-contain rounded-lg"
+              className="h-full max-h-96 w-auto object-contain rounded-lg"
             />
-          </div>
-        ) : (
-          <p>Error loading image.</p>
-        )}
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {characterOptions.map((option) => {
-          const title = option.animeTitle
-          let displayTitle = 'Unknown Anime'
-          if (title) {
-            switch (parsedOptions.titleDisplay) {
-              case 'english':
-                displayTitle = title.english || title.romaji
-                break
-              case 'romaji':
-                displayTitle = title.romaji
-                break
-              case 'both':
-                displayTitle = title.english
-                  ? `${title.romaji} / ${title.english}`
-                  : title.romaji
-                break
-              default:
-                displayTitle = title.romaji
-            }
-          }
-          const isHidden = isFetchingHint || hiddenOptionIds.has(option.id)
-          return (
-            <AnswerOption
-              key={option.id}
-              id={option.id}
-              name={option.name.full}
-              anime={displayTitle}
-              isCorrect={feedback.correctId === option.id}
-              isSelected={feedback.selectedId === option.id}
-              isDisabled={feedback.correctId !== null}
-              isHidden={isHidden}
-              onClick={() => handleAnswer(option)}
-            />
-          )
-        })}
-      </div>
-
-      {hint && (
-        <div className="bg-blue-500/20 p-4 rounded-lg text-center">
-          <p
-            className={`text-blue-300 ${isFetchingHint ? 'animate-pulse' : ''}`}
-          >
-            {hint}
-          </p>
+          ) : (
+            <p>Error loading image.</p>
+          )}
+          {hint && (
+            <div className="bg-secondary border border-accent py-3 px-6 rounded text-center text-sm italic">
+              {hint}
+            </div>
+          )}
         </div>
       )}
 
+      {/* Answer Options Grid - Conditional Layout */}
+      <div
+        className={
+          isGamepadModeActive
+            ? 'relative flex flex-col gap-4 justify-center items-center'
+            : 'grid grid-cols-1 md:grid-cols-2 gap-4'
+        }
+      >
+        {isGamepadModeActive ? (
+          // Gamepad Cross Layout (Top, Left, Right, Bottom)
+          <>
+            {characterOptions[0] && (
+              <div className="flex justify-center items-end flex-1 min-w-[50%]">
+                <AnswerOption
+                  option={characterOptions[0]}
+                  onSelect={handleAnswer}
+                  feedback={feedback}
+                  isDisabled={feedback.correctId !== null}
+                  isHidden={hiddenOptionIds.has(characterOptions[0].id)}
+                />
+              </div>
+            )}
+            <div className="flex gap-4 w-full">
+              {characterOptions[1] && (
+                <div className="flex justify-end items-center flex-1">
+                  <AnswerOption
+                    option={characterOptions[1]}
+                    onSelect={handleAnswer}
+                    feedback={feedback}
+                    isDisabled={feedback.correctId !== null}
+                    isHidden={hiddenOptionIds.has(characterOptions[1].id)}
+                  />
+                </div>
+              )}
+              <div className="flex justify-center items-center">
+                <GamepadButtonIcon button="dpad" />
+              </div>
+              {characterOptions[2] && (
+                <div className="flex justify-start items-center flex-1">
+                  <AnswerOption
+                    option={characterOptions[2]}
+                    onSelect={handleAnswer}
+                    feedback={feedback}
+                    isDisabled={feedback.correctId !== null}
+                    isHidden={hiddenOptionIds.has(characterOptions[2].id)}
+                  />
+                </div>
+              )}
+            </div>
+            {characterOptions[3] && (
+              <div className="flex justify-center items-start flex-1 min-w-[50%]">
+                <AnswerOption
+                  option={characterOptions[3]}
+                  onSelect={handleAnswer}
+                  feedback={feedback}
+                  isDisabled={feedback.correctId !== null}
+                  isHidden={hiddenOptionIds.has(characterOptions[3].id)}
+                />
+              </div>
+            )}
+          </>
+        ) : (
+          // Standard Layout
+          characterOptions.map((option) => (
+            <AnswerOption
+              key={option.id}
+              option={option}
+              onSelect={handleAnswer}
+              feedback={feedback}
+              isDisabled={feedback.correctId !== null}
+              isHidden={hiddenOptionIds.has(option.id)}
+            />
+          ))
+        )}
+      </div>
+
       <Lifelines
-        lifelines={gameState.lifelines}
-        lifelineUsage={gameState.lifelineUsage}
+        available={gameState.lifelines}
+        usage={gameState.lifelineUsage}
         currentRound={gameState.currentRound}
-        isDisabled={feedback.correctId !== null || isFetchingHint}
         onFiftyFifty={handleFiftyFifty}
         onSkip={handleSkip}
         onHint={handleHint}
+        isHintLoading={isFetchingHint}
+        disabled={feedback.correctId !== null} // Disable lifelines when feedback is showing
+        // Pass gamepad icons if active
+        gamepadIcons={
+          isGamepadModeActive
+            ? {
+                fiftyFifty: <GamepadButtonIcon button="faceButtonLeft" />,
+                skip: <GamepadButtonIcon button="faceButtonTop" />,
+                hint: <GamepadButtonIcon button="faceButtonRight" />,
+              }
+            : undefined
+        }
       />
     </div>
   )

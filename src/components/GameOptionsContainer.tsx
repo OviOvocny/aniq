@@ -10,6 +10,7 @@ const DEFAULT_OPTIONS: GameOptionsType = {
   titleDisplay: 'romaji',
   difficulty: 'medium',
   timerEnabled: true,
+  gamepadEnabled: false,
 }
 
 export const GameOptionsContainer: React.FC = () => {
@@ -48,6 +49,8 @@ export const GameOptionsContainer: React.FC = () => {
     if (options.difficulty) params.set('difficulty', options.difficulty)
     if (options.timerEnabled !== undefined)
       params.set('timerEnabled', options.timerEnabled.toString())
+    if (options.gamepadEnabled !== undefined)
+      params.set('gamepadEnabled', options.gamepadEnabled.toString())
     window.location.href = `/game?${params.toString()}`
   }
 

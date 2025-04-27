@@ -1,59 +1,71 @@
 import React from 'react'
+import type { AnimeCharacter } from '../lib/anilist' // Ensure this type is imported
 
-interface AnswerOptionProps {
-  id: number
-  name: string
-  anime: string
-  isCorrect: boolean
-  isSelected: boolean
+export interface AnswerOptionProps {
+  option: AnimeCharacter // Use the full object
+  onSelect: (option: AnimeCharacter) => void
+  feedback: {
+    correctId: number | null
+    selectedId: number | null
+  }
   isDisabled: boolean
-  isHidden?: boolean
-  onClick: () => void
+  isHidden: boolean
+  prefix?: React.ReactNode // Add optional prefix for icon
 }
 
 export const AnswerOption: React.FC<AnswerOptionProps> = ({
-  id,
-  name,
-  anime,
-  isCorrect,
-  isSelected,
+  option,
+  onSelect,
+  feedback,
   isDisabled,
-  isHidden = false,
-  onClick,
+  isHidden,
+  prefix,
 }) => {
-  const baseClasses = 'p-4 rounded-lg text-left transition-all duration-200'
-  let stateClasses = ''
-  let interactionClasses = ''
+  const { id, name, image, animeTitle } = option // Destructure needed fields
+  const isCorrect = feedback.correctId === id
+  const isSelected = feedback.selectedId === id
 
-  if (isCorrect) {
-    stateClasses = 'bg-green-600 animate-pulse'
-    interactionClasses =
-      'ring-2 ring-green-500 shadow-lg shadow-green-500/50 cursor-default'
-  } else if (isSelected) {
-    stateClasses = 'bg-red-600'
-    interactionClasses = 'cursor-default'
-  } else {
-    stateClasses = 'bg-secondary'
-    interactionClasses = isDisabled
-      ? 'cursor-not-allowed opacity-70'
-      : isHidden
-        ? 'cursor-default'
-        : 'hover:bg-opacity-80 cursor-pointer'
+  // Determine display title (handle missing title)
+  const displayTitle =
+    animeTitle?.romaji || animeTitle?.english || 'Unknown Anime'
+
+  const handleClick = () => {
+    if (!isDisabled) {
+      onSelect(option)
+    }
   }
 
-  // Hide only the text, not the button itself
-  const textHiddenClass = isHidden ? 'opacity-0 select-none' : ''
+  let buttonClass = `
+    flex flex-col items-center p-3 rounded-lg border-2 transition-all w-full text-center
+    text-sm min-h-[60px] justify-center
+  `
+  if (isHidden) {
+    buttonClass += ' opacity-0'
+  } else if (isSelected) {
+    if (isCorrect) {
+      buttonClass += ' bg-green-500 border-green-400 text-white animate-pulse'
+    } else {
+      buttonClass += ' bg-red-500 border-red-400 text-white animate-pulse'
+    }
+  } else if (feedback.correctId !== null && isCorrect) {
+    // Show correct answer if wrong one was selected
+    buttonClass += ' bg-green-500 border-green-400 text-white opacity-80'
+  } else if (isDisabled && !isSelected) {
+    buttonClass += ' bg-gray-700 border-gray-600 opacity-60 cursor-not-allowed'
+  } else {
+    buttonClass +=
+      ' bg-secondary hover:bg-accent border-transparent hover:border-accent-light cursor-pointer'
+  }
 
   return (
     <button
-      key={id}
-      onClick={!isHidden && !isDisabled ? onClick : undefined}
-      className={`${baseClasses} ${stateClasses} ${interactionClasses}`}
-      disabled={isDisabled || isHidden}
-      aria-hidden={isHidden}
+      onClick={handleClick}
+      disabled={isDisabled}
+      className={buttonClass}
     >
-      <div className={`font-semibold ${textHiddenClass}`}>{name}</div>
-      <div className={`text-sm text-gray-400 ${textHiddenClass}`}>{anime}</div>
+      {prefix && <span>{prefix}</span>}
+      <span className={`font-semibold`}>{name.full}</span>
+      <span className={`text-xs mt-1`}>{displayTitle}</span>
     </button>
   )
 }

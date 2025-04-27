@@ -29,7 +29,7 @@ export const Timer: React.FC<TimerProps> = ({
           style={{ width: `${timerWidth}%` }}
         />
       </div>
-      <div className={`w-24 text-xl ${timerColor} ${timerBlink}`}>
+      <div className={`w-24 text-end text-xl ${timerColor} ${timerBlink}`}>
         {timeLeft} s
       </div>
     </div>

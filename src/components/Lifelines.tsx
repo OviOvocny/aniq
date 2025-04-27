@@ -1,77 +1,160 @@
 import React from 'react'
 
-interface LifelinesProps {
-  lifelines: {
+interface LifelineButtonProps {
+  onClick: () => void
+  isDisabled: boolean
+  children: React.ReactNode
+  icon?: React.ReactNode
+}
+
+const LifelineButton: React.FC<LifelineButtonProps> = ({
+  onClick,
+  isDisabled,
+  children,
+  icon,
+}) => {
+  return (
+    <button
+      onClick={onClick}
+      disabled={isDisabled}
+      className={`relative px-4 py-2 rounded bg-secondary transition-all ${
+        isDisabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-accent'
+      }`}
+    >
+      {icon && <span className="mr-2">{icon}</span>}
+      {children}
+    </button>
+  )
+}
+
+interface LifelineStatusProps {
+  label: string
+  usedAtRound: number | null
+  currentRound: number
+  cooldown: number
+}
+
+const LifelineStatus: React.FC<LifelineStatusProps> = ({
+  label,
+  usedAtRound,
+  currentRound,
+  cooldown,
+}) => {
+  if (usedAtRound === null) {
+    return <span></span>
+  }
+
+  const roundsUntilAvailable = cooldown - (currentRound - usedAtRound)
+  if (roundsUntilAvailable <= 0) {
+    return <span className="text-green-400">Recharged</span>
+  }
+
+  return (
+    <span className="text-yellow-400">
+      Available in {roundsUntilAvailable} round
+      {roundsUntilAvailable !== 1 ? 's' : ''}
+    </span>
+  )
+}
+
+export interface LifelinesProps {
+  available: {
     fiftyFifty: boolean
     skip: boolean
     hint: boolean
   }
-  lifelineUsage: {
+  usage: {
     fiftyFifty: number | null
     skip: number | null
     hint: number | null
   }
   currentRound: number
-  isDisabled: boolean
+  disabled: boolean
   onFiftyFifty: () => void
   onSkip: () => void
   onHint: () => void
+  isHintLoading: boolean
+  gamepadIcons?: {
+    fiftyFifty: React.ReactNode
+    skip: React.ReactNode
+    hint: React.ReactNode
+  }
 }
 
+const LIFELINE_COOLDOWN = 3
+
 export const Lifelines: React.FC<LifelinesProps> = ({
-  lifelines,
-  lifelineUsage,
+  available,
+  usage,
   currentRound,
-  isDisabled,
+  disabled,
   onFiftyFifty,
   onSkip,
   onHint,
+  isHintLoading,
+  gamepadIcons,
 }) => {
-  const getTurnsRemaining = (usage: number | null) => {
-    if (usage === null) return null
-    const turnsPassed = currentRound - usage
-    const turnsRemaining = 3 - turnsPassed
-    return turnsRemaining > 0 ? turnsRemaining : 0
-  }
+  const canUseFiftyFifty = available.fiftyFifty && !disabled
+  const canUseSkip = available.skip && !disabled
+  const canUseHint = available.hint && !disabled && !isHintLoading
 
   return (
-    <div className="flex justify-center space-x-4">
-      <button
-        onClick={onFiftyFifty}
-        disabled={!lifelines.fiftyFifty || isDisabled}
-        className="px-4 py-2 bg-accent hover:bg-opacity-80 rounded disabled:opacity-50 flex items-center space-x-2"
-      >
-        <span>50:50</span>
-        {!lifelines.fiftyFifty && (
-          <span className="text-xs bg-gray-700 px-1 rounded">
-            {getTurnsRemaining(lifelineUsage.fiftyFifty)} turns
-          </span>
-        )}
-      </button>
-      <button
-        onClick={onSkip}
-        disabled={!lifelines.skip || isDisabled}
-        className="px-4 py-2 bg-accent hover:bg-opacity-80 rounded disabled:opacity-50 flex items-center space-x-2"
-      >
-        <span>Skip</span>
-        {!lifelines.skip && (
-          <span className="text-xs bg-gray-700 px-1 rounded">
-            {getTurnsRemaining(lifelineUsage.skip)} turns
-          </span>
-        )}
-      </button>
-      <button
-        onClick={onHint}
-        disabled={!lifelines.hint || isDisabled}
-        className="px-4 py-2 bg-accent hover:bg-opacity-80 rounded disabled:opacity-50 flex items-center space-x-2"
-      >
-        <span>Hint</span>
-        {!lifelines.hint && (
-          <span className="text-xs bg-gray-700 px-1 rounded">
-            {getTurnsRemaining(lifelineUsage.hint)} turns
-          </span>
-        )}
-      </button>
+    <div className="bg-primary p-4 rounded-lg shadow-md">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="text-center space-y-1">
+          <LifelineButton
+            onClick={onFiftyFifty}
+            isDisabled={!canUseFiftyFifty}
+            icon={gamepadIcons?.fiftyFifty}
+          >
+            50/50
+          </LifelineButton>
+          <div className="text-xs text-gray-400">
+            <LifelineStatus
+              label="50/50"
+              usedAtRound={usage.fiftyFifty}
+              currentRound={currentRound}
+              cooldown={LIFELINE_COOLDOWN}
+            />
+          </div>
+        </div>
+
+        <div className="text-center space-y-1">
+          <LifelineButton
+            onClick={onSkip}
+            isDisabled={!canUseSkip}
+            icon={gamepadIcons?.skip}
+          >
+            Skip
+          </LifelineButton>
+          <div className="text-xs text-gray-400">
+            <LifelineStatus
+              label="Skip"
+              usedAtRound={usage.skip}
+              currentRound={currentRound}
+              cooldown={LIFELINE_COOLDOWN}
+            />
+          </div>
+        </div>
+
+        <div className="text-center space-y-1">
+          <LifelineButton
+            onClick={onHint}
+            isDisabled={!canUseHint}
+            icon={gamepadIcons?.hint}
+          >
+            {isHintLoading ? 'Loading Hint...' : 'Hint'}
+          </LifelineButton>
+          <div className="text-xs text-gray-400">
+            <LifelineStatus
+              label="Hint"
+              usedAtRound={usage.hint}
+              currentRound={currentRound}
+              cooldown={LIFELINE_COOLDOWN}
+            />
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

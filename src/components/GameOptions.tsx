@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useState, useEffect } from 'react'
 
 export interface GameOptions {
   genres: string[]
@@ -9,6 +9,7 @@ export interface GameOptions {
   titleDisplay: 'english' | 'romaji' | 'both'
   difficulty: 'easy' | 'medium' | 'hard'
   timerEnabled: boolean
+  gamepadEnabled: boolean
 }
 
 interface GameOptionsProps {
@@ -44,6 +45,7 @@ const PRESETS = {
     titleDisplay: 'english' as const,
     difficulty: 'medium' as const,
     timerEnabled: true,
+    gamepadEnabled: false,
   },
   year: {
     genres: [],
@@ -51,6 +53,7 @@ const PRESETS = {
     titleDisplay: 'english' as const,
     difficulty: 'medium' as const,
     timerEnabled: true,
+    gamepadEnabled: false,
   },
   genre: {
     genres: ['Action', 'Adventure'],
@@ -58,6 +61,7 @@ const PRESETS = {
     titleDisplay: 'english' as const,
     difficulty: 'medium' as const,
     timerEnabled: true,
+    gamepadEnabled: false,
   },
   mixed: {
     genres: [],
@@ -65,6 +69,7 @@ const PRESETS = {
     titleDisplay: 'english' as const,
     difficulty: 'medium' as const,
     timerEnabled: true,
+    gamepadEnabled: false,
   },
 }
 
@@ -73,6 +78,56 @@ export const GameOptions: React.FC<GameOptionsProps> = ({
   onOptionsChange,
   onStartGame,
 }) => {
+  const [isGamepadConnected, setIsGamepadConnected] = useState(false)
+
+  useEffect(() => {
+    const checkGamepad = () => {
+      const gamepads = navigator.getGamepads ? navigator.getGamepads() : []
+      let connected = false
+      for (const gamepad of gamepads) {
+        if (gamepad && gamepad.connected) {
+          connected = true
+          break
+        }
+      }
+      setIsGamepadConnected(connected)
+    }
+
+    checkGamepad() // Initial check
+
+    const gamepadConnectedHandler = (e: GamepadEvent) => {
+      console.log(
+        'Gamepad connected at index %d: %s. %d buttons, %d axes.',
+        e.gamepad.index,
+        e.gamepad.id,
+        e.gamepad.buttons.length,
+        e.gamepad.axes.length
+      )
+      setIsGamepadConnected(true)
+    }
+
+    const gamepadDisconnectedHandler = (e: GamepadEvent) => {
+      console.log(
+        'Gamepad disconnected from index %d: %s',
+        e.gamepad.index,
+        e.gamepad.id
+      )
+      // Check if any other gamepads are still connected
+      checkGamepad()
+    }
+
+    window.addEventListener('gamepadconnected', gamepadConnectedHandler)
+    window.addEventListener('gamepaddisconnected', gamepadDisconnectedHandler)
+
+    return () => {
+      window.removeEventListener('gamepadconnected', gamepadConnectedHandler)
+      window.removeEventListener(
+        'gamepaddisconnected',
+        gamepadDisconnectedHandler
+      )
+    }
+  }, [])
+
   const handlePresetSelect = (preset: keyof typeof PRESETS) => {
     onOptionsChange(PRESETS[preset])
   }
@@ -336,6 +391,37 @@ export const GameOptions: React.FC<GameOptionsProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Gamepad Options Section - Conditionally rendered */}
+      {isGamepadConnected && (
+        <div className="bg-secondary p-6 rounded-lg space-y-4">
+          <div>
+            <h3 className="font-semibold mb-2">Gamepad Mode</h3>
+            <div className="flex items-center space-x-2">
+              <button
+                onClick={() =>
+                  onOptionsChange({
+                    ...options,
+                    gamepadEnabled: !options.gamepadEnabled,
+                  })
+                }
+                className={`px-4 py-2 rounded transition-all ${
+                  options.gamepadEnabled
+                    ? 'bg-accent text-white'
+                    : 'bg-gray-700 hover:bg-gray-600 text-gray-300'
+                }`}
+              >
+                {options.gamepadEnabled ? 'Enabled' : 'Disabled'}
+              </button>
+              <p className="text-sm text-gray-400">
+                {options.gamepadEnabled
+                  ? 'Answers and lifelines mapped to gamepad buttons.'
+                  : 'Use mouse/keyboard controls.'}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
