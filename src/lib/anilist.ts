@@ -256,7 +256,7 @@ export async function fetchAnimeDetails(
 // Updated getQuestionCharacters to return correctAnimeId instead of details
 export async function getQuestionCharacters(
   round: number,
-  useJapaneseTitles: boolean = false,
+  titleDisplay: 'english' | 'romaji' | 'both' = 'romaji',
   genres: string[] = [],
   yearRange: { start: number; end: number } = {
     start: 1940,

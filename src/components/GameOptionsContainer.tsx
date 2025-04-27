@@ -7,8 +7,9 @@ const DEFAULT_OPTIONS: GameOptionsType = {
     start: 1940,
     end: new Date().getFullYear(),
   },
-  useJapaneseTitles: false,
+  titleDisplay: 'romaji',
   difficulty: 'medium',
+  timerEnabled: true,
 }
 
 export const GameOptionsContainer: React.FC = () => {
@@ -43,8 +44,10 @@ export const GameOptionsContainer: React.FC = () => {
       params.set('yearStart', options.yearRange.start.toString())
       params.set('yearEnd', options.yearRange.end.toString())
     }
-    if (options.useJapaneseTitles) params.set('useJapaneseTitles', 'true')
+    if (options.titleDisplay) params.set('titleDisplay', options.titleDisplay)
     if (options.difficulty) params.set('difficulty', options.difficulty)
+    if (options.timerEnabled !== undefined)
+      params.set('timerEnabled', options.timerEnabled.toString())
     window.location.href = `/game?${params.toString()}`
   }
 

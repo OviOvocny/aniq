@@ -40,8 +40,9 @@ const DEFAULT_OPTIONS: GameOptions = {
     start: 2000,
     end: new Date().getFullYear(),
   },
-  useJapaneseTitles: false,
+  titleDisplay: 'romaji',
   difficulty: 'medium',
+  timerEnabled: true,
 }
 
 const TIMER_WARNING_THRESHOLD = 5 // seconds before timer turns red
@@ -90,13 +91,65 @@ const HeartIcon = () => (
   </svg>
 )
 
-export default function Game({ options = DEFAULT_OPTIONS }: GameProps) {
-  const parsedOptions =
-    typeof options === 'string' ? JSON.parse(options) : options
-  const [gameState, setGameState] = useState<GameState>({
+export default function Game({
+  options: initialOptions = DEFAULT_OPTIONS,
+}: GameProps) {
+  // Parse options from URL query parameters or use defaults
+  const [parsedOptions] = useState<GameOptions>(() => {
+    // Check if running in a browser environment
+    if (typeof window === 'undefined') {
+      return typeof initialOptions === 'object'
+        ? initialOptions
+        : DEFAULT_OPTIONS
+    }
+
+    const params = new URLSearchParams(window.location.search)
+    const urlOptions: Partial<GameOptions> = {}
+
+    const genres = params.get('genres')
+    if (genres) urlOptions.genres = genres.split(',')
+
+    const yearStartStr = params.get('yearStart')
+    const yearEndStr = params.get('yearEnd')
+    if (yearStartStr && yearEndStr) {
+      const start = parseInt(yearStartStr, 10)
+      const end = parseInt(yearEndStr, 10)
+      if (!isNaN(start) && !isNaN(end)) {
+        urlOptions.yearRange = { start, end }
+      }
+    }
+
+    const titleDisplay = params.get('titleDisplay') as
+      | GameOptions['titleDisplay']
+      | null
+    if (titleDisplay && ['english', 'romaji', 'both'].includes(titleDisplay)) {
+      urlOptions.titleDisplay = titleDisplay
+    }
+
+    const difficulty = params.get('difficulty') as
+      | GameOptions['difficulty']
+      | null
+    if (difficulty && ['easy', 'medium', 'hard'].includes(difficulty)) {
+      urlOptions.difficulty = difficulty
+    }
+
+    const timerEnabledStr = params.get('timerEnabled')
+    if (timerEnabledStr !== null) {
+      urlOptions.timerEnabled = timerEnabledStr === 'true'
+    }
+
+    // Merge URL options with defaults, giving precedence to URL options
+    // Ensure initialOptions is treated as default if it's not a complete object (e.g., came from props but isn't used)
+    const baseOptions =
+      typeof initialOptions === 'object' ? initialOptions : DEFAULT_OPTIONS
+    return { ...baseOptions, ...urlOptions }
+  })
+
+  const [gameState, setGameState] = useState<GameState>(() => ({
     score: 0,
     lives: 3,
     currentRound: 1,
+    // Initialize timeLeft based on the final parsedOptions
     timeLeft: getTimePerQuestion(parsedOptions.difficulty),
     isPaused: false,
     lifelines: {
@@ -109,7 +162,7 @@ export default function Game({ options = DEFAULT_OPTIONS }: GameProps) {
       skip: null,
       hint: null,
     },
-  })
+  }))
 
   const [correctCharacterId, setCorrectCharacterId] = useState<number | null>(
     null
@@ -146,7 +199,7 @@ export default function Game({ options = DEFAULT_OPTIONS }: GameProps) {
     try {
       const data = await getQuestionCharacters(
         gameState.currentRound + 1,
-        parsedOptions.useJapaneseTitles,
+        parsedOptions.titleDisplay,
         parsedOptions.genres,
         parsedOptions.yearRange,
         parsedOptions.difficulty
@@ -185,7 +238,7 @@ export default function Game({ options = DEFAULT_OPTIONS }: GameProps) {
         console.log('No preloaded data, fetching current question data')
         questionData = await getQuestionCharacters(
           gameState.currentRound,
-          parsedOptions.useJapaneseTitles,
+          parsedOptions.titleDisplay,
           parsedOptions.genres,
           parsedOptions.yearRange,
           parsedOptions.difficulty
@@ -254,7 +307,8 @@ export default function Game({ options = DEFAULT_OPTIONS }: GameProps) {
       gameState.timeLeft > 0 &&
       !gameOver &&
       isTimerRunning &&
-      !showPauseScreen
+      !showPauseScreen &&
+      parsedOptions.timerEnabled
     ) {
       const timer = setInterval(() => {
         setGameState((prev) => ({
@@ -264,10 +318,21 @@ export default function Game({ options = DEFAULT_OPTIONS }: GameProps) {
       }, 1000)
 
       return () => clearInterval(timer)
-    } else if (gameState.timeLeft === 0 && isTimerRunning && !showPauseScreen) {
+    } else if (
+      gameState.timeLeft === 0 &&
+      isTimerRunning &&
+      !showPauseScreen &&
+      parsedOptions.timerEnabled
+    ) {
       handleWrongAnswer()
     }
-  }, [gameState.timeLeft, gameOver, isTimerRunning, showPauseScreen])
+  }, [
+    gameState.timeLeft,
+    gameOver,
+    isTimerRunning,
+    showPauseScreen,
+    parsedOptions.timerEnabled,
+  ])
 
   const handleAnswer = (selectedOption: AnimeCharacter) => {
     if (feedback.correctId !== null) return
@@ -330,7 +395,12 @@ export default function Game({ options = DEFAULT_OPTIONS }: GameProps) {
 
   const calculateScore = () => {
     const baseScore = 100
-    const timeBonus = Math.floor(gameState.timeLeft * 2)
+    const timeElapsed =
+      getTimePerQuestion(parsedOptions.difficulty) - gameState.timeLeft
+    const timeBonus = parsedOptions.timerEnabled
+      ? Math.floor(Math.max(10 - timeElapsed, 0) * 20)
+      : 0
+    console.debug('Time bonus:', parsedOptions.timerEnabled, timeBonus)
     const difficultyMultiplier = 1 + (gameState.currentRound - 1) * 0.1
     return Math.floor((baseScore + timeBonus) * difficultyMultiplier)
   }
@@ -414,7 +484,6 @@ export default function Game({ options = DEFAULT_OPTIONS }: GameProps) {
     setIsTimerRunning(false)
     setIsFetchingHint(true)
     setHint('Fetching hint...')
-    useLifeline('hint')
 
     try {
       const details = await fetchAnimeDetails(correctAnimeId)
@@ -454,12 +523,13 @@ export default function Game({ options = DEFAULT_OPTIONS }: GameProps) {
         const randomHint =
           validHints[Math.floor(Math.random() * validHints.length)]
         setHint(randomHint.text)
+        useLifeline('hint')
       } else {
-        setHint('Hint unavailable for this anime.')
+        setHint('Hint unavailable for this anime. Lifeline not used.')
       }
     } catch (error) {
       console.error('Error fetching hint details:', error)
-      setHint('Error fetching hint.')
+      setHint('Error fetching hint. Lifeline not used.')
     }
     setIsFetchingHint(false)
     if (!gameOver && feedback.correctId === null) {
@@ -514,35 +584,45 @@ export default function Game({ options = DEFAULT_OPTIONS }: GameProps) {
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
-        <div className="text-xl">Round: {gameState.currentRound}</div>
-        <div className="text-xl">Score: {gameState.score}</div>
+        <div className="flex flex-col flex-1">
+          <div className="text-sm opacity-80">
+            Round {gameState.currentRound}
+          </div>
+          <div className="text-lg">Score: {gameState.score}</div>
+        </div>
         <Lives count={gameState.lives} />
-        <button
-          onClick={requestPause}
-          disabled={pendingPause}
-          className={`px-2 py-1 rounded text-sm transition-colors ${
-            pendingPause
-              ? 'bg-gray-500 cursor-not-allowed'
-              : 'bg-accent hover:bg-opacity-80'
-          }`}
-        >
-          {pendingPause ? (
-            <span className="flex items-center space-x-1">
-              <span className="animate-pulse">●</span>
-              <span>Pause Pending</span>
-            </span>
-          ) : (
-            'Pause After Answer'
+        <div className="flex flex-1 justify-end">
+          {parsedOptions.timerEnabled && (
+            <button
+              onClick={requestPause}
+              disabled={pendingPause}
+              className={`px-2 py-1 rounded text-sm transition-colors ${
+                pendingPause
+                  ? 'bg-gray-500 cursor-not-allowed'
+                  : 'bg-accent hover:bg-opacity-80'
+              }`}
+            >
+              {pendingPause ? (
+                <span className="flex items-center space-x-1">
+                  <span className="animate-pulse">●</span>
+                  <span>Pause Pending</span>
+                </span>
+              ) : (
+                'Pause After Answer'
+              )}
+            </button>
           )}
-        </button>
+        </div>
       </div>
 
-      <Timer
-        timeLeft={gameState.timeLeft}
-        totalTime={getTimePerQuestion(parsedOptions.difficulty)}
-        warningThreshold={TIMER_WARNING_THRESHOLD}
-        blinkThreshold={TIMER_BLINK_THRESHOLD}
-      />
+      {parsedOptions.timerEnabled && (
+        <Timer
+          timeLeft={gameState.timeLeft}
+          totalTime={getTimePerQuestion(parsedOptions.difficulty)}
+          warningThreshold={TIMER_WARNING_THRESHOLD}
+          blinkThreshold={TIMER_BLINK_THRESHOLD}
+        />
+      )}
 
       <div className="bg-secondary p-6 rounded-lg min-h-[400px] flex items-center justify-center">
         {isLoading ? (
@@ -560,29 +640,34 @@ export default function Game({ options = DEFAULT_OPTIONS }: GameProps) {
         )}
       </div>
 
-      {hint && (
-        <div className="bg-blue-500/20 p-4 rounded-lg text-center">
-          <p
-            className={`text-blue-300 ${isFetchingHint ? 'animate-pulse' : ''}`}
-          >
-            {hint}
-          </p>
-        </div>
-      )}
-
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {characterOptions.map((option) => {
           const title = option.animeTitle
-          const displayTitle = parsedOptions.useJapaneseTitles
-            ? title?.romaji
-            : title?.english || title?.romaji
+          let displayTitle = 'Unknown Anime'
+          if (title) {
+            switch (parsedOptions.titleDisplay) {
+              case 'english':
+                displayTitle = title.english || title.romaji
+                break
+              case 'romaji':
+                displayTitle = title.romaji
+                break
+              case 'both':
+                displayTitle = title.english
+                  ? `${title.romaji} / ${title.english}`
+                  : title.romaji
+                break
+              default:
+                displayTitle = title.romaji
+            }
+          }
           const isHidden = isFetchingHint || hiddenOptionIds.has(option.id)
           return (
             <AnswerOption
               key={option.id}
               id={option.id}
               name={option.name.full}
-              anime={displayTitle || 'Unknown Anime'}
+              anime={displayTitle}
               isCorrect={feedback.correctId === option.id}
               isSelected={feedback.selectedId === option.id}
               isDisabled={feedback.correctId !== null}
@@ -592,6 +677,16 @@ export default function Game({ options = DEFAULT_OPTIONS }: GameProps) {
           )
         })}
       </div>
+
+      {hint && (
+        <div className="bg-blue-500/20 p-4 rounded-lg text-center">
+          <p
+            className={`text-blue-300 ${isFetchingHint ? 'animate-pulse' : ''}`}
+          >
+            {hint}
+          </p>
+        </div>
+      )}
 
       <Lifelines
         lifelines={gameState.lifelines}

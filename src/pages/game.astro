@@ -14,14 +14,20 @@ const yearEnd = parseInt(urlParams.get('yearEnd') || MAX_YEAR.toString());
 const validYearStart = Math.max(MIN_YEAR, Math.min(yearStart, yearEnd));
 const validYearEnd = Math.max(validYearStart, Math.min(yearEnd, MAX_YEAR));
 
+// Validate titleDisplay parameter
+const titleDisplayParam = urlParams.get('titleDisplay') || 'romaji';
+const validTitleDisplay = ['english', 'romaji', 'both'].includes(titleDisplayParam) 
+                          ? titleDisplayParam as 'english' | 'romaji' | 'both' 
+                          : 'romaji';
+
 const options = {
   genres: urlParams.get('genres')?.split(',').filter(Boolean) || [],
   yearRange: {
     start: validYearStart,
     end: validYearEnd
   },
-  useJapaneseTitles: urlParams.get('useJapaneseTitles') === 'true',
-  difficulty: urlParams.get('difficulty') || 'medium'
+  titleDisplay: validTitleDisplay,
+  difficulty: (urlParams.get('difficulty') || 'medium') as 'easy' | 'medium' | 'hard'
 };
 ---
 

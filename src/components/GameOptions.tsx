@@ -6,8 +6,9 @@ export interface GameOptions {
     start: number
     end: number
   }
-  useJapaneseTitles: boolean
+  titleDisplay: 'english' | 'romaji' | 'both'
   difficulty: 'easy' | 'medium' | 'hard'
+  timerEnabled: boolean
 }
 
 interface GameOptionsProps {
@@ -40,26 +41,30 @@ const PRESETS = {
   popular: {
     genres: [],
     yearRange: { start: 2000, end: MAX_YEAR },
-    useJapaneseTitles: false,
+    titleDisplay: 'english' as const,
     difficulty: 'medium' as const,
+    timerEnabled: true,
   },
   year: {
     genres: [],
     yearRange: { start: 1990, end: 2000 },
-    useJapaneseTitles: false,
+    titleDisplay: 'english' as const,
     difficulty: 'medium' as const,
+    timerEnabled: true,
   },
   genre: {
     genres: ['Action', 'Adventure'],
     yearRange: { start: 2000, end: MAX_YEAR },
-    useJapaneseTitles: false,
+    titleDisplay: 'english' as const,
     difficulty: 'medium' as const,
+    timerEnabled: true,
   },
   mixed: {
     genres: [],
     yearRange: { start: MIN_YEAR, end: MAX_YEAR },
-    useJapaneseTitles: false,
+    titleDisplay: 'english' as const,
     difficulty: 'medium' as const,
+    timerEnabled: true,
   },
 }
 
@@ -93,8 +98,14 @@ export const GameOptions: React.FC<GameOptionsProps> = ({
     onOptionsChange({ ...options, difficulty })
   }
 
+  const handleTitleDisplayChange = (
+    titleDisplay: GameOptions['titleDisplay']
+  ) => {
+    onOptionsChange({ ...options, titleDisplay })
+  }
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 text-start">
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <button
           onClick={() => handlePresetSelect('popular')}
@@ -126,10 +137,17 @@ export const GameOptions: React.FC<GameOptionsProps> = ({
         </button>
       </div>
 
+      <button
+        onClick={onStartGame}
+        className="w-full bg-accent hover:bg-opacity-80 text-white font-bold py-3 px-6 rounded-lg transition-all text-lg"
+      >
+        Start Game
+      </button>
+
       <div className="bg-secondary p-6 rounded-lg space-y-4">
         <div>
           <h3 className="font-semibold mb-2">Genres</h3>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2 my-2">
             {AVAILABLE_GENRES.map((genre) => (
               <button
                 key={genre}
@@ -144,6 +162,11 @@ export const GameOptions: React.FC<GameOptionsProps> = ({
               </button>
             ))}
           </div>
+          <p className="text-sm text-gray-400">
+            {options.genres.length > 0
+              ? `Only anime that follow all of the selected genres will be shown.`
+              : 'All genres allowed.'}
+          </p>
         </div>
 
         <div>
@@ -248,69 +271,71 @@ export const GameOptions: React.FC<GameOptionsProps> = ({
             <div className="text-sm text-gray-400">
               {options.difficulty === 'easy' && (
                 <p>
-                  Smaller pool of anime, more time to answer, and easier
-                  character selection.
+                  Only the top anime, more time to answer, and easier character
+                  selection.
                 </p>
               )}
               {options.difficulty === 'medium' && (
                 <p>
-                  Balanced pool size, standard time limit, and moderate
-                  character difficulty.
+                  Balanced selection, standard time limit, and moderate
+                  character difficulty curve.
                 </p>
               )}
               {options.difficulty === 'hard' && (
                 <p>
-                  Larger pool of anime, faster difficulty progression, and
-                  challenging character selection.
+                  Larger pool of anime with faster difficulty progression, tight
+                  time limit, and challenging character selection.
                 </p>
               )}
             </div>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <div className="relative">
-            <input
-              type="checkbox"
-              id="useJapaneseTitles"
-              checked={options.useJapaneseTitles}
-              onChange={(e) =>
+        <div>
+          <h3 className="font-semibold mb-2">Anime Title Display</h3>
+          <div className="flex gap-2">
+            {(['english', 'romaji', 'both'] as const).map((displayType) => (
+              <button
+                key={displayType}
+                onClick={() => handleTitleDisplayChange(displayType)}
+                className={`px-4 py-2 rounded transition-all ${
+                  options.titleDisplay === displayType
+                    ? 'bg-accent text-white'
+                    : 'bg-gray-700 hover:bg-gray-600 text-gray-300'
+                }`}
+              >
+                {displayType.charAt(0).toUpperCase() + displayType.slice(1)}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <h3 className="font-semibold mb-2">Timer</h3>
+          <div className="flex items-center space-x-2">
+            <button
+              onClick={() =>
                 onOptionsChange({
                   ...options,
-                  useJapaneseTitles: e.target.checked,
+                  timerEnabled: !options.timerEnabled,
                 })
               }
-              className="peer sr-only"
-            />
-            <div className="w-5 h-5 bg-gray-700 rounded border border-gray-600 peer-checked:bg-accent peer-checked:border-accent transition-colors">
-              <svg
-                className="w-5 h-5 text-white opacity-0 peer-checked:opacity-100 transition-opacity"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-              >
-                <path
-                  fillRule="evenodd"
-                  d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-                  clipRule="evenodd"
-                />
-              </svg>
-            </div>
+              className={`px-4 py-2 rounded transition-all ${
+                options.timerEnabled
+                  ? 'bg-accent text-white'
+                  : 'bg-gray-700 hover:bg-gray-600 text-gray-300'
+              }`}
+            >
+              {options.timerEnabled ? 'Enabled' : 'Disabled'}
+            </button>
+            <p className="text-sm text-gray-400">
+              {options.timerEnabled
+                ? 'Timer will count down and affect your score. Answer quickly to get bonus points.'
+                : 'No time limit - take your time to answer. No time bonus.'}
+            </p>
           </div>
-          <label
-            htmlFor="useJapaneseTitles"
-            className="text-sm text-gray-300 cursor-pointer select-none"
-          >
-            Use Japanese Titles
-          </label>
         </div>
       </div>
-
-      <button
-        onClick={onStartGame}
-        className="w-full bg-accent hover:bg-opacity-80 text-white font-bold py-3 px-6 rounded-lg transition-all"
-      >
-        Start Game
-      </button>
     </div>
   )
 }
