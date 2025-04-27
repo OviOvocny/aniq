@@ -5,6 +5,7 @@ import {
   type AnimeCharacter,
   type AnimeDetails,
   type AnimeTitle,
+  RateLimitError,
 } from '../lib/anilist'
 import { Timer } from './Timer'
 import { Lives } from './Lives'
@@ -93,6 +94,33 @@ const HeartIcon = () => (
     />
   </svg>
 )
+
+// Timer component for rate limit pause
+const RateLimitTimer: React.FC<{
+  initialSeconds: number
+  onComplete: () => void
+}> = ({ initialSeconds, onComplete }) => {
+  const [secondsLeft, setSecondsLeft] = useState(initialSeconds)
+
+  useEffect(() => {
+    if (secondsLeft <= 0) {
+      onComplete()
+      return
+    }
+
+    const intervalId = setInterval(() => {
+      setSecondsLeft((prev) => prev - 1)
+    }, 1000)
+
+    return () => clearInterval(intervalId)
+  }, [secondsLeft, onComplete])
+
+  return (
+    <div className="text-2xl font-bold text-accent animate-pulse">
+      {Math.max(0, secondsLeft)}s
+    </div>
+  )
+}
 
 export default function Game({
   options: initialOptions = DEFAULT_OPTIONS,
@@ -204,6 +232,12 @@ export default function Game({
   >(null)
   const [isFetchingHint, setIsFetchingHint] = useState(false)
   const [hiddenOptionIds, setHiddenOptionIds] = useState<Set<number>>(new Set())
+  // Store the absolute reset timestamp (seconds since epoch)
+  const [rateLimitResetTimestamp, setRateLimitResetTimestamp] = useState<
+    number | null
+  >(null)
+  const [isRateLimitPausePending, setIsRateLimitPausePending] = useState(false)
+  const [isRateLimitPauseActive, setIsRateLimitPauseActive] = useState(false)
 
   // Refs for debouncing gamepad inputs
   const lastGamepadState = useRef<Gamepad | null>(null)
@@ -262,9 +296,24 @@ export default function Game({
         currentRound: prev.currentRound + 1,
       }))
       setFeedback({ correctId: null, selectedId: null })
-      if (pendingPause) {
-        setShowPauseScreen(true)
-        setPendingPause(false)
+      // Check for pending rate limit pause before proceeding
+      if (isRateLimitPausePending) {
+        setIsRateLimitPauseActive(true)
+        setIsRateLimitPausePending(false)
+        setTimeout(() => setShowPauseScreen(true), 2000) // Show pause screen for rate limit after 2 seconds
+        console.log('Rate limit pause initiated.')
+      } else {
+        // Proceed normally if no pause is pending
+        if (pendingPause) {
+          setShowPauseScreen(true)
+          setPendingPause(false)
+        } else {
+          // Only increment round if not entering manual pause
+          setGameState((prev) => ({
+            ...prev,
+            currentRound: prev.currentRound + 1,
+          }))
+        }
       }
     }, 1500)
   }
@@ -278,54 +327,69 @@ export default function Game({
     setHint('Fetching hint...')
 
     try {
+      // Fetch details FIRST
       const details = await fetchAnimeDetails(correctAnimeId)
 
+      // Process details and find hints
       const hintTypes = [
         {
           type: 'studio',
-          text: `Produced by ${details.studios?.nodes?.[0]?.name}`,
+          text: details.studios?.nodes?.[0]?.name
+            ? `Produced by ${details.studios.nodes[0].name}`
+            : null, // Check if data exists
         },
         {
           type: 'director',
-          text: `Directed by ${details.staff?.edges?.find((edge: any) => edge.role === 'Director')?.node.name.full}`,
+          text: details.staff?.edges?.find(
+            (edge: any) => edge.role === 'Director'
+          )?.node.name.full
+            ? `Directed by ${
+                details.staff.edges.find(
+                  (edge: any) => edge.role === 'Director'
+                )!.node.name.full
+              }`
+            : null,
         },
-        { type: 'year', text: `Released in ${details.startDate?.year}` },
-        { type: 'genre', text: `Genre: ${details.genres?.[0]}` },
+        {
+          type: 'year',
+          text: details.startDate?.year
+            ? `Released in ${details.startDate.year}`
+            : null,
+        },
+        {
+          type: 'genre',
+          text: details.genres?.[0] ? `Genre: ${details.genres[0]}` : null,
+        },
       ]
 
-      const validHints = hintTypes.filter((h) => {
-        if (!h.text || h.text.endsWith('undefined')) return false
-        switch (h.type) {
-          case 'studio':
-            return details.studios?.nodes?.[0]?.name
-          case 'director':
-            return details.staff?.edges?.find(
-              (edge: any) => edge.role === 'Director'
-            )?.node.name.full
-          case 'year':
-            return details.startDate?.year
-          case 'genre':
-            return details.genres?.[0]
-          default:
-            return false
-        }
-      })
+      const validHints = hintTypes.filter((h) => h.text) // Filter out null texts
 
       if (validHints.length > 0) {
         const randomHint =
           validHints[Math.floor(Math.random() * validHints.length)]
-        setHint(randomHint.text)
-        useLifeline('hint')
+        setHint(randomHint.text!) // Use the valid text
+        useLifeline('hint') // Consume lifeline ONLY on successful fetch and processing
       } else {
         setHint('Hint unavailable for this anime. Lifeline not used.')
       }
     } catch (error) {
-      console.error('Error fetching hint details:', error)
-      setHint('Error fetching hint. Lifeline not used.')
-    }
-    setIsFetchingHint(false)
-    if (!gameOver && feedback.correctId === null) {
-      setIsTimerRunning(true)
+      if (error instanceof RateLimitError) {
+        console.warn(
+          'Rate limit hit while fetching hint. Hint not shown, lifeline not consumed.'
+        )
+        setHint('Rate limit hit, hint unavailable. Lifeline not used.')
+        // Do NOT consume lifeline
+      } else {
+        console.error('Error fetching hint details:', error)
+        setHint('Error fetching hint. Lifeline not used.')
+        // Do NOT consume lifeline
+      }
+    } finally {
+      setIsFetchingHint(false)
+      // Only restart timer if game isn't over and feedback isn't showing
+      if (!gameOver && feedback.correctId === null) {
+        setIsTimerRunning(true)
+      }
     }
   }
 
@@ -353,22 +417,30 @@ export default function Game({
       lives: prev.lives - 1,
     }))
 
-    if (gameState.lives <= 1) {
+    if (gameState.lives - 1 <= 0) {
       setGameOver(true)
-      setIsTimerRunning(false)
     } else {
-      setTimeout(() => {
-        setGameState((prev) => ({
-          ...prev,
-          currentRound: prev.currentRound + 1,
-        }))
+      // Check for pending rate limit pause before proceeding after wrong answer
+      if (isRateLimitPausePending) {
+        setIsRateLimitPauseActive(true)
+        setIsRateLimitPausePending(false)
+        setTimeout(() => setShowPauseScreen(true), 2000) // Show pause screen for rate limit after 2 seconds
+        console.log('Rate limit pause initiated after wrong answer.')
+      } else {
+        // Proceed normally if no pause is pending
         if (pendingPause) {
           setShowPauseScreen(true)
           setPendingPause(false)
+        } else {
+          // Only increment round if not entering manual pause
+          setGameState((prev) => ({
+            ...prev,
+            currentRound: prev.currentRound + 1,
+          }))
         }
-      }, 1500)
+      }
     }
-  }, [gameState.lives, pendingPause])
+  }, [gameState.lives, pendingPause, isRateLimitPausePending])
 
   const requestPause = useCallback(() => {
     setPendingPause(true)
@@ -404,11 +476,27 @@ export default function Game({
             currentRound: prev.currentRound + 1,
           }))
 
-          if (pendingPause) {
-            setShowPauseScreen(true)
-            setPendingPause(false)
+          // Check for pending rate limit pause before proceeding
+          if (isRateLimitPausePending) {
+            setIsRateLimitPauseActive(true)
+            setIsRateLimitPausePending(false)
+            setTimeout(() => setShowPauseScreen(true), 2000) // Show pause screen for rate limit after 2 seconds
+            console.log('Rate limit pause initiated after correct answer.')
+          } else {
+            // Proceed normally if no pause is pending
+            if (pendingPause) {
+              setShowPauseScreen(true)
+              setPendingPause(false)
+            } else {
+              // Only increment round if not entering manual pause
+              setGameState((prev) => ({
+                ...prev,
+                score: prev.score + calculateScore(),
+                currentRound: prev.currentRound + 1,
+              }))
+            }
+            setFeedback({ correctId: null, selectedId: null })
           }
-          setFeedback({ correctId: null, selectedId: null })
         }, 1500)
       } else {
         setFeedback({
@@ -514,7 +602,7 @@ export default function Game({
   )
 
   const preloadNextQuestion = useCallback(async () => {
-    if (isPreloading || gameOver) return
+    if (isPreloading || gameOver || isRateLimitPauseActive) return
 
     console.log('Starting to preload next question...')
     setIsPreloading(true)
@@ -530,95 +618,126 @@ export default function Game({
       setNextQuestionData(data)
     } catch (error) {
       console.error('Error preloading next question:', error)
-      setNextQuestionData(null)
+      // Check if it's a RateLimitError
+      if (error instanceof RateLimitError) {
+        console.warn(
+          `Rate limit hit during preload. Pausing for 60s (forced). Reset at ${error.resetTimestamp}`
+        )
+        setRateLimitResetTimestamp(Math.floor(Date.now() / 1000) + 60) // Always set to 60 seconds from now
+        setIsRateLimitPausePending(true) // Only set pending, don't activate pause yet
+        setFeedback({ correctId: null, selectedId: null })
+      } else {
+        // Handle other errors: try again with a replacement question
+        // Optionally show a more specific error message to the user
+        // Do not end the game, just try to reload
+        setIsTimerRunning(false)
+        setTimeout(() => loadQuestion(), 500)
+      }
+      setNextQuestionData(null) // Ensure no stale data is used
     } finally {
       setIsPreloading(false)
     }
   }, [isPreloading, gameState.currentRound, parsedOptions, gameOver])
 
-  const loadQuestion = useCallback(async () => {
-    console.log('Loading new question...')
-    setIsLoading(true)
-    setHint(null)
-    setCurrentQuestionImage(null)
-    setCharacterOptions([])
-    setHiddenOptionIds(new Set())
+  const loadQuestion = useCallback(
+    async (force = false) => {
+      if (isRateLimitPauseActive && !force) return
+      console.log('Loading new question...')
+      setIsLoading(true)
+      setHint(null)
+      setCurrentQuestionImage(null)
+      setCharacterOptions([])
+      setHiddenOptionIds(new Set())
 
-    try {
-      let questionData: {
-        characters: AnimeCharacter[]
-        correctCharacterId: number
-        correctAnimeId: number
-      }
+      try {
+        let questionData: {
+          characters: AnimeCharacter[]
+          correctCharacterId: number
+          correctAnimeId: number
+        }
 
-      if (nextQuestionData) {
-        console.log('Using preloaded question data')
-        questionData = nextQuestionData
-        setNextQuestionData(null)
-        preloadNextQuestion()
-      } else {
-        console.log('No preloaded data, fetching current question data')
-        questionData = await getQuestionCharacters(
-          gameState.currentRound,
-          parsedOptions.titleDisplay,
-          parsedOptions.genres,
-          parsedOptions.yearRange,
-          parsedOptions.difficulty
+        if (nextQuestionData) {
+          console.log('Using preloaded question data')
+          questionData = nextQuestionData
+          setNextQuestionData(null)
+          preloadNextQuestion()
+        } else {
+          console.log('No preloaded data, fetching current question data')
+          questionData = await getQuestionCharacters(
+            gameState.currentRound,
+            parsedOptions.titleDisplay,
+            parsedOptions.genres,
+            parsedOptions.yearRange,
+            parsedOptions.difficulty
+          )
+          preloadNextQuestion()
+        }
+
+        const shuffledOptions = [...questionData.characters].sort(
+          () => Math.random() - 0.5
         )
-        preloadNextQuestion()
-      }
+        setCharacterOptions(shuffledOptions)
+        setCorrectCharacterId(questionData.correctCharacterId)
+        setCorrectAnimeId(questionData.correctAnimeId)
 
-      const shuffledOptions = [...questionData.characters].sort(
-        () => Math.random() - 0.5
-      )
-      setCharacterOptions(shuffledOptions)
-      setCorrectCharacterId(questionData.correctCharacterId)
-      setCorrectAnimeId(questionData.correctAnimeId)
+        const characterToShow = questionData.characters.find(
+          (c) => c.id === questionData.correctCharacterId
+        )
+        setCurrentQuestionImage(characterToShow?.image.large || null)
 
-      const characterToShow = questionData.characters.find(
-        (c) => c.id === questionData.correctCharacterId
-      )
-      setCurrentQuestionImage(characterToShow?.image.large || null)
+        setGameState((prev) => {
+          const newLifelines = { ...prev.lifelines }
+          const newLifelineUsage = { ...prev.lifelineUsage }
 
-      setGameState((prev) => {
-        const newLifelines = { ...prev.lifelines }
-        const newLifelineUsage = { ...prev.lifelineUsage }
+          // Check each lifeline and renew if it's been 3 turns since it was used
+          Object.keys(newLifelines).forEach((key) => {
+            const lifelineKey = key as keyof typeof newLifelines
+            if (
+              !newLifelines[lifelineKey] &&
+              prev.lifelineUsage[lifelineKey] !== null &&
+              prev.currentRound - prev.lifelineUsage[lifelineKey]! >= 3
+            ) {
+              newLifelines[lifelineKey] = true
+              newLifelineUsage[lifelineKey] = null
+            }
+          })
 
-        // Check each lifeline and renew if it's been 3 turns since it was used
-        Object.keys(newLifelines).forEach((key) => {
-          const lifelineKey = key as keyof typeof newLifelines
-          if (
-            !newLifelines[lifelineKey] &&
-            prev.lifelineUsage[lifelineKey] !== null &&
-            prev.currentRound - prev.lifelineUsage[lifelineKey]! >= 3
-          ) {
-            newLifelines[lifelineKey] = true
-            newLifelineUsage[lifelineKey] = null
+          return {
+            ...prev,
+            timeLeft: getTimePerQuestion(parsedOptions.difficulty),
+            lifelines: newLifelines,
+            lifelineUsage: newLifelineUsage,
           }
         })
-
-        return {
-          ...prev,
-          timeLeft: getTimePerQuestion(parsedOptions.difficulty),
-          lifelines: newLifelines,
-          lifelineUsage: newLifelineUsage,
+      } catch (error) {
+        console.error('Error loading question:', error)
+        // Assert error type to safely access response
+        if (error instanceof RateLimitError) {
+          console.warn(
+            `Rate limit hit during question load. Pausing for 60s (forced). Reset at ${error.resetTimestamp}`
+          )
+          setRateLimitResetTimestamp(Math.floor(Date.now() / 1000) + 60) // Always set to 60 seconds from now
+          setIsRateLimitPausePending(true) // Only set pending, don't activate pause yet
+          setFeedback({ correctId: null, selectedId: null }) // Clear any lingering feedback so options/lifelines are re-enabled after pause
+        } else {
+          // On any error, just try to reload a new question after a short delay
+          setIsTimerRunning(false)
+          setTimeout(() => loadQuestion(), 500)
         }
-      })
-    } catch (error) {
-      console.error('Error loading question:', error)
-      setGameOver(true)
-    }
-    setIsLoading(false)
-    if (!isFetchingHint) {
-      setIsTimerRunning(true)
-    }
-  }, [
-    nextQuestionData,
-    preloadNextQuestion,
-    gameState.currentRound,
-    parsedOptions,
-    isFetchingHint,
-  ])
+      }
+      setIsLoading(false)
+      if (!isFetchingHint) {
+        setIsTimerRunning(true)
+      }
+    },
+    [
+      nextQuestionData,
+      preloadNextQuestion,
+      gameState.currentRound,
+      parsedOptions,
+      isFetchingHint,
+    ]
+  )
 
   useEffect(() => {
     loadQuestion()
@@ -796,10 +915,70 @@ export default function Game({
     }
   }, [isGamepadModeActive, handleGamepadButtonPress, handleGamepadDpadPress]) // These should now be defined
 
+  // --- Effect for retrying question fetch after rate limit pause ---
+  const handleRateLimitPauseComplete = useCallback(async () => {
+    console.log('Rate limit pause finished. Retrying question fetch...')
+    setIsLoading(true) // Show loading indicator while fetching
+    try {
+      // Attempt to load the question again (which might use preloaded or fetch new)
+      await loadQuestion(true) // Force a real fetch after rate limit pause
+      console.log('Question fetch successful after rate limit pause.')
+      // Reset rate limit state and hide pause screen
+      setIsRateLimitPauseActive(false)
+      // setRateLimitPauseSeconds removed (no longer used)null)
+      setShowPauseScreen(false)
+      setIsTimerRunning(true) // Resume game timer
+    } catch (error) {
+      setIsLoading(false) // Hide loading indicator on error
+      console.error('Failed to load question after rate limit pause:', error)
+      if (error instanceof RateLimitError) {
+        // Hit rate limit AGAIN
+        console.warn(
+          `Rate limit hit again. Scheduling another pause for ${error.retryAfterSeconds}s.`
+        )
+        // setRateLimitPauseSeconds removed (no longer used)error.retryAfterSeconds)
+        setIsRateLimitPauseActive(true) // Stay in pause state
+        setShowPauseScreen(true) // Keep pause screen
+      } else {
+        // Different error, likely fatal
+        console.error('Unrecoverable error after rate limit retry.')
+        setGameOver(true)
+        setShowPauseScreen(false) // Hide pause screen on game over
+        setIsRateLimitPauseActive(false)
+      }
+    }
+  }, [loadQuestion]) // Dependency: loadQuestion
+
+  // --- Render Logic ---
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-accent"></div>
+      </div>
+    )
+  }
+
+  if (isRateLimitPauseActive && rateLimitResetTimestamp) {
+    // Always use 60 seconds for rate limit pause
+    const nowSec = Math.floor(Date.now() / 1000)
+    const secondsLeft = Math.max(1, rateLimitResetTimestamp - nowSec)
+    return (
+      <div className="text-center">
+        <h2 className="text-3xl font-bold mb-4">Rate Limit Pause</h2>
+        <p className="text-xl">
+          Thanks AniList... we will resume shortly. Take a break!
+        </p>
+        <div className="space-y-4 mb-6">
+          <p className="text-xl">Round: {gameState.currentRound}</p>
+          <p className="text-xl">Score: {gameState.score}</p>
+          <div className="flex justify-center">
+            <Lives count={gameState.lives} />
+          </div>
+        </div>
+        <RateLimitTimer
+          initialSeconds={secondsLeft}
+          onComplete={handleRateLimitPauseComplete}
+        />
       </div>
     )
   }
@@ -1000,6 +1179,72 @@ export default function Game({
             : undefined
         }
       />
+
+      {/* Pause Screen / Game Over Screen */}
+      {(showPauseScreen || gameOver) && (
+        <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50">
+          <div className="bg-secondary p-8 rounded-lg text-center shadow-xl max-w-md w-full">
+            {gameOver ? (
+              <>
+                <h2 className="text-3xl font-bold mb-4 text-red-500">
+                  Game Over
+                </h2>
+                <p className="text-xl mb-6">Final Score: {gameState.score}</p>
+                <button
+                  onClick={() => window.location.reload()} // Simple way to restart
+                  className="bg-accent hover:bg-accent-light text-white font-bold py-2 px-6 rounded transition-colors"
+                >
+                  Play Again
+                </button>
+              </>
+            ) : isRateLimitPauseActive ? (
+              // Rate Limit Pause Content
+              <>
+                <h2 className="text-3xl font-bold mb-4 text-yellow-500">
+                  Rate Limit Active
+                </h2>
+                <p className="text-lg mb-4">
+                  AniList API limit reached. Please wait...
+                </p>
+                {rateLimitResetTimestamp && (
+                  <RateLimitTimer
+                    initialSeconds={Math.max(
+                      1,
+                      rateLimitResetTimestamp - Math.floor(Date.now() / 1000)
+                    )}
+                    onComplete={handleRateLimitPauseComplete}
+                  />
+                )}
+                <p className="text-sm mt-4 text-gray-400">
+                  Retrying automatically...
+                </p>
+                {/* Resume button is implicitly disabled here */}
+              </>
+            ) : (
+              // Regular Pause Content
+              <>
+                <h2 className="text-3xl font-bold mb-4">Game Paused</h2>
+                <button
+                  onClick={resumeGame}
+                  className="bg-accent hover:bg-accent-light text-white font-bold py-2 px-6 rounded transition-colors mb-4 mr-2"
+                  autoFocus
+                >
+                  Resume
+                </button>
+                <button
+                  onClick={() => {
+                    setGameOver(true)
+                    setShowPauseScreen(false)
+                  }}
+                  className="bg-gray-600 hover:bg-gray-500 text-white font-bold py-2 px-6 rounded transition-colors mb-4"
+                >
+                  Quit
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

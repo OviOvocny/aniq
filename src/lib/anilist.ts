@@ -1,7 +1,224 @@
-import { GraphQLClient, gql } from 'graphql-request'
+import { GraphQLClient, gql, ClientError } from 'graphql-request'
+// Import Variables as a type
+import type { Variables } from 'graphql-request'
 
+// --- Rate Limit Configuration ---
 const ANILIST_API_URL = 'https://graphql.anilist.co'
-const client = new GraphQLClient(ANILIST_API_URL)
+const ACTUAL_RATE_LIMIT_PER_MINUTE = 30 // Anilist API is currently limited to 30/min despite headers saying 90/min.
+const MIN_REMAINING_BEFORE_PAUSE = 6 // Pause requests proactively when remaining count hits this value
+const RATE_LIMIT_MAX = ACTUAL_RATE_LIMIT_PER_MINUTE // Set to AniList's actual per-minute limit for your client
+
+// --- Rate Limit State ---
+let remainingRequests: number | null = RATE_LIMIT_MAX
+let retryAfterTimestamp: number | null = null // seconds since epoch
+let rateLimitWindowStartTimestamp: number | null = null // seconds since epoch
+let rateLimitResetTimer: NodeJS.Timeout | null = null // Timer to reset the count after a minute if needed
+
+// --- Custom Error for Rate Limiting ---
+export class RateLimitError extends Error {
+  retryAfterSeconds: number | null
+  resetTimestamp: number | null
+
+  constructor(
+    message: string,
+    retryAfterSeconds: number | null = null,
+    resetTimestamp: number | null = null
+  ) {
+    super(message)
+    this.name = 'RateLimitError'
+    this.retryAfterSeconds = retryAfterSeconds
+    this.resetTimestamp = resetTimestamp
+  }
+}
+
+// Helper to set a pause until a specific time
+function setRateLimitPause(retryAfterSeconds: number) {
+  const now = Math.floor(Date.now() / 1000)
+  retryAfterTimestamp = now + retryAfterSeconds
+  setTimeout(
+    () => {
+      retryAfterTimestamp = null
+      remainingRequests = ACTUAL_RATE_LIMIT_PER_MINUTE // Reset count after pause
+    },
+    retryAfterSeconds * 1000 + 100
+  ) // Add a small buffer
+}
+
+// --- Rate Limit State Management ---
+const updateRateLimitState = (headers: Headers) => {
+  const remainingHeader = headers.get('x-ratelimit-remaining')
+  if (remainingHeader) {
+    const currentRemaining = parseInt(remainingHeader, 10)
+    // Adjust remaining count based on the known lower limit issue
+    remainingRequests = Math.max(0, currentRemaining - 60) // If header says 90, actual is 30. If header says 60, actual is 0.
+    console.log(
+      `[RateLimit] Updated remaining requests: ${remainingRequests} (Header: ${currentRemaining})`
+    )
+  }
+
+  // Clear any existing reset timer if we get a new update
+  if (rateLimitResetTimer) {
+    clearTimeout(rateLimitResetTimer)
+    rateLimitResetTimer = null
+  }
+
+  // If we don't have an explicit reset time from a 429,
+  // assume the limit resets roughly 60 seconds from now.
+  if (retryAfterTimestamp === null) {
+    rateLimitResetTimer = setTimeout(() => {
+      console.log('[RateLimit] Resetting request count after 60s timer.')
+      remainingRequests = ACTUAL_RATE_LIMIT_PER_MINUTE
+      rateLimitResetTimer = null
+    }, 60 * 1000) // 60 seconds
+  }
+}
+
+// Export function to get current status for UI
+export const getRateLimitStatus = () => ({
+  remaining: remainingRequests,
+  retryUntil: retryAfterTimestamp,
+})
+
+// --- Original GraphQL Client ---
+const baseClient = new GraphQLClient(ANILIST_API_URL, {
+  errorPolicy: 'ignore',
+})
+
+// --- Rate-Limited Client Wrapper ---
+async function isInternetWorking(): Promise<boolean> {
+  try {
+    // Use a HEAD request to minimize data transfer
+    await fetch('https://1.1.1.1/cdn-cgi/trace', {
+      method: 'HEAD',
+      mode: 'no-cors',
+    })
+    // If fetch doesn't throw, we assume the network is up.
+    return true
+  } catch {
+    return false
+  }
+}
+
+const rateLimitedClient = {
+  request: async <T, V extends Variables = Variables>(
+    query: string,
+    variables?: V
+  ): Promise<T> => {
+    // Always attempt the request, even if retryAfterTimestamp is set. Only throw RateLimitError if a 429 is received from the server.
+    try {
+      console.log(
+        `[RateLimit] Making request. Remaining estimate: ${remainingRequests}`
+      )
+      // Track the start of the rate limit window
+      const nowSec = Math.floor(Date.now() / 1000)
+      if (remainingRequests !== null && remainingRequests === RATE_LIMIT_MAX) {
+        console.log('Starting new burst window at', nowSec)
+        // We are starting a new burst window
+        rateLimitWindowStartTimestamp = nowSec
+      }
+      const response = await baseClient.rawRequest<T, V>(query, variables)
+      console.log('!!!!!!RESPONSE RAW!!!!!!', response)
+      updateRateLimitState(response.headers)
+      // Decrement optimistic count *after* successful request
+      if (remainingRequests !== null) {
+        remainingRequests = Math.max(0, remainingRequests - 1)
+        console.log(
+          `[RateLimit] Decremented remaining count: ${remainingRequests}`
+        )
+      }
+      return response.data
+    } catch (error: any) {
+      console.log('!!!!!!ERROR RAW!!!!!!', error)
+      // Robustly check for 429 regardless of error type
+      const response =
+        typeof error === 'object' && error && 'response' in error
+          ? (error as any).response
+          : undefined
+      if (response && response.status === 429 && response.headers) {
+        // Assert headers as Headers type within this block
+        const headers = error.response.headers as Headers
+        // Determine wait time using x-ratelimit-reset header if available
+        const resetHeader = headers.get('x-ratelimit-reset')
+        let resetTimestamp: number | null = null
+        let retrySeconds: number
+        if (resetHeader) {
+          // X-RateLimit-Reset is a UNIX timestamp (seconds) of when the rate limit resets
+          resetTimestamp = parseInt(resetHeader, 10)
+          const nowSec = Math.floor(Date.now() / 1000)
+          retrySeconds = Math.max(1, resetTimestamp - nowSec)
+        } else {
+          const retryAfterHeader = headers.get('retry-after')
+          retrySeconds = retryAfterHeader ? parseInt(retryAfterHeader, 10) : 60
+          resetTimestamp = Math.floor(Date.now() / 1000) + retrySeconds
+        }
+        console.error(
+          `[RateLimit] Received 429. Waiting for ${retrySeconds}s (reset at ${resetTimestamp ? new Date(resetTimestamp * 1000).toISOString() : 'retry-after'})`,
+          headers
+        )
+        setRateLimitPause(retrySeconds)
+
+        throw new RateLimitError(
+          `Rate limit exceeded. Retry after ${retrySeconds} seconds.`,
+          retrySeconds,
+          resetTimestamp
+        )
+      } else if (response && response.status >= 400) {
+        // For other HTTP errors, re-throw but still log details if possible
+        const message =
+          typeof error === 'object' && error && 'message' in error
+            ? (error as any).message
+            : String(error)
+        console.error('[API] HTTP Error: ', message, response)
+        throw error
+      } else if (
+        error.message.includes('NetworkError') &&
+        remainingRequests !== null &&
+        rateLimitWindowStartTimestamp !== null
+      ) {
+        // Check if internet is actually working
+        const online = await isInternetWorking()
+        if (online) {
+          console.log('NETWORK ERROR EMULATING RATE LIMIT (internet is up)')
+          // Heuristic: treat as rate limit if we know we just made a lot of requests
+          const resetTimestamp = rateLimitWindowStartTimestamp + 60
+          const retrySeconds = Math.max(
+            1,
+            resetTimestamp - Math.floor(Date.now() / 1000)
+          )
+          console.warn(
+            '[RateLimit] NetworkError likely due to CORS-blocked 429. Triggering RL pause for',
+            retrySeconds,
+            'seconds.'
+          )
+          setRateLimitPause(retrySeconds)
+          throw new RateLimitError(
+            'Rate limit exceeded (network/CORS error heuristic). Retry after ' +
+              retrySeconds +
+              ' seconds.',
+            retrySeconds,
+            resetTimestamp
+          )
+        } else {
+          // True network outage, re-throw
+          console.warn(
+            'NETWORK ERROR: Internet appears to be down. Not treating as rate limit.'
+          )
+          throw error
+        }
+      } else {
+        // For all other errors (including non-HTTP), re-throw
+        console.log('RETHROWING UNKNOWN ERROR', typeof error, error.message)
+        console.log(
+          'RATE STATS',
+          getRateLimitStatus(),
+          rateLimitWindowStartTimestamp,
+          remainingRequests
+        )
+        throw error
+      }
+    }
+  },
+}
 
 // --- Cache Keys ---
 const TOP_ANIME_IDS_CACHE_KEY = 'aniq_topAnimeIdsCache'
@@ -221,11 +438,15 @@ export async function fetchTopAnimeIds(count: number): Promise<number[]> {
     return topAnimeIdsCache.get(count)!
   }
   console.log(`Cache miss for top anime IDs (count: ${count}), fetching...`)
-  const data = await client.request<TopAnimeResponse>(GET_TOP_ANIME, {
-    page: 1,
-    perPage: count,
-    sort: ['POPULARITY_DESC'],
-  })
+  // Use the rate-limited client
+  const data = await rateLimitedClient.request<TopAnimeResponse>(
+    GET_TOP_ANIME,
+    {
+      page: 1,
+      perPage: count,
+      sort: ['POPULARITY_DESC'],
+    }
+  )
   const ids = data.Page.media.map((anime) => anime.id)
   topAnimeIdsCache.set(count, ids)
   saveCache(TOP_ANIME_IDS_CACHE_KEY, topAnimeIdsCache) // Save to localStorage
@@ -241,9 +462,13 @@ export async function fetchAnimeDetails(
     return animeDetailsCache.get(animeId)!
   }
   console.log(`Cache miss for anime details (ID: ${animeId}), fetching...`)
-  const data = await client.request<AnimeDetailsResponse>(GET_ANIME_DETAILS, {
-    id: animeId,
-  })
+  // Use the rate-limited client
+  const data = await rateLimitedClient.request<AnimeDetailsResponse>(
+    GET_ANIME_DETAILS,
+    {
+      id: animeId,
+    }
+  )
   if (!data || !data.Media) {
     console.error(`Failed to fetch details for anime ID: ${animeId}`, data)
     throw new Error(`Could not fetch details for anime ID: ${animeId}`)
@@ -253,7 +478,7 @@ export async function fetchAnimeDetails(
   return data.Media
 }
 
-// Updated getQuestionCharacters to return correctAnimeId instead of details
+// Updated getQuestionCharacters to use rateLimitedClient
 export async function getQuestionCharacters(
   round: number,
   titleDisplay: 'english' | 'romaji' | 'both' = 'romaji',
@@ -286,7 +511,6 @@ export async function getQuestionCharacters(
       // 1. Get a pool of anime IDs based on the options
       let animeIds: number[]
       if (genres.length > 0) {
-        // If genres are specified, get anime from those genres
         const genreQuery = gql`
           query GetAnimeByGenres($genres: [String], $startYear: FuzzyDateInt, $endYear: FuzzyDateInt) {
             Page(page: 1, perPage: ${poolSize}) {
@@ -301,17 +525,17 @@ export async function getQuestionCharacters(
             }
           }
         `
-        const response = await client.request<AnimeByGenresResponse>(
+        // Use the rate-limited client
+        const response = await rateLimitedClient.request<AnimeByGenresResponse>(
           genreQuery,
           {
             genres,
-            startYear: yearRange.start * 10000, // Convert to YYYYMMDD format
-            endYear: (yearRange.end + 1) * 10000 - 1, // Convert to YYYYMMDD format and subtract 1 to get end of year
+            startYear: yearRange.start * 10000,
+            endYear: (yearRange.end + 1) * 10000 - 1,
           }
         )
         animeIds = response.Page.media.map((m) => m.id)
       } else {
-        // Otherwise, get top anime within the year range
         const yearQuery = gql`
           query GetTopAnimeByYear($startYear: FuzzyDateInt, $endYear: FuzzyDateInt) {
             Page(page: 1, perPage: ${poolSize}) {
@@ -326,10 +550,14 @@ export async function getQuestionCharacters(
             }
           }
         `
-        const response = await client.request<AnimeByYearResponse>(yearQuery, {
-          startYear: yearRange.start * 10000, // Convert to YYYYMMDD format
-          endYear: (yearRange.end + 1) * 10000 - 1, // Convert to YYYYMMDD format and subtract 1 to get end of year
-        })
+        // Use the rate-limited client
+        const response = await rateLimitedClient.request<AnimeByYearResponse>(
+          yearQuery,
+          {
+            startYear: yearRange.start * 10000,
+            endYear: (yearRange.end + 1) * 10000 - 1,
+          }
+        )
         animeIds = response.Page.media.map((m) => m.id)
       }
 
@@ -343,10 +571,12 @@ export async function getQuestionCharacters(
         .slice(0, 4)
 
       // 3. Batch fetch characters for the selected anime
-      const characterBatchData = await client.request<CharactersBatchResponse>(
-        GET_CHARACTERS_BATCH,
-        { ids: selectedAnimeIds, role: 'MAIN' }
-      )
+      // Use the rate-limited client
+      const characterBatchData =
+        await rateLimitedClient.request<CharactersBatchResponse>(
+          GET_CHARACTERS_BATCH,
+          { ids: selectedAnimeIds, role: 'MAIN' }
+        )
       if (!characterBatchData?.Page?.media)
         throw new Error('Character batch query failed.')
 
@@ -390,10 +620,11 @@ export async function getQuestionCharacters(
       }
 
       // 4. Batch fetch ONLY titles
-      const titleBatchData = await client.request<TitlesBatchResponse>(
-        GET_TITLES_BATCH,
-        { ids: originAnimeIds }
-      )
+      // Use the rate-limited client
+      const titleBatchData =
+        await rateLimitedClient.request<TitlesBatchResponse>(GET_TITLES_BATCH, {
+          ids: originAnimeIds,
+        })
       if (!titleBatchData?.Page?.media)
         throw new Error('Title batch query failed.')
       const titleMap = new Map(
@@ -421,6 +652,16 @@ export async function getQuestionCharacters(
         correctAnimeId,
       }
     } catch (error) {
+      // Check if it's our custom RateLimitError
+      if (error instanceof RateLimitError) {
+        console.error(
+          `Rate limit hit during getQuestionCharacters (Attempt ${attempts + 1}):`,
+          error.message
+        )
+        // We need to propagate this error to the UI layer to show the pause
+        throw error
+      }
+      // Handle other errors
       console.error(`Attempt ${attempts + 1} failed:`, error)
       attempts++
       if (attempts === maxAttempts) {
@@ -428,9 +669,13 @@ export async function getQuestionCharacters(
           'Failed to get question characters after multiple attempts'
         )
       }
+      // Optional: Add a small delay before retrying non-rate-limit errors
+      // await new Promise(resolve => setTimeout(resolve, 500));
     }
   }
 
+  // This should theoretically not be reached if maxAttempts > 0
+  // unless RateLimitError is thrown and not caught upstream
   throw new Error('Failed to get question characters')
 }
 

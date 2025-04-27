@@ -549,7 +549,8 @@ type SharedButtonName = keyof typeof sharedIcons
 type XboxSpecificButtonName = keyof typeof specificIcons.xbox
 type PlaystationSpecificButtonName = keyof typeof specificIcons.playstation
 
-type ButtonName =
+// Export the ButtonName type
+export type ButtonName =
   | SharedButtonName
   | XboxSpecificButtonName
   | PlaystationSpecificButtonName

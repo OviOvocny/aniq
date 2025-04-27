@@ -81,7 +81,7 @@ export interface LifelinesProps {
   }
 }
 
-const LIFELINE_COOLDOWN = 3
+const LIFELINE_COOLDOWN = 4
 
 export const Lifelines: React.FC<LifelinesProps> = ({
   available,
