@@ -487,14 +487,7 @@ export default function Game({
             if (pendingPause) {
               setShowPauseScreen(true)
               setPendingPause(false)
-            } else {
-              // Only increment round if not entering manual pause
-              setGameState((prev) => ({
-                ...prev,
-                score: prev.score + calculateScore(),
-                currentRound: prev.currentRound + 1,
-              }))
-            }
+            } // No additional round increment here; already incremented above
             setFeedback({ correctId: null, selectedId: null })
           }
         }, 1500)
@@ -925,8 +918,8 @@ export default function Game({
       console.log('Question fetch successful after rate limit pause.')
       // Reset rate limit state and hide pause screen
       setIsRateLimitPauseActive(false)
-      // setRateLimitPauseSeconds removed (no longer used)null)
       setShowPauseScreen(false)
+      setFeedback({ correctId: null, selectedId: null }) // Clear lingering feedback after pause
       setIsTimerRunning(true) // Resume game timer
     } catch (error) {
       setIsLoading(false) // Hide loading indicator on error
